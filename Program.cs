@@ -31,8 +31,8 @@ public static class Program
         // rather than the exe directory.
         //
         // IMPORTANT for single-file publish: AppContext.BaseDirectory points to the
-        // self-extracted bundle temp dir (e.g. %LOCALAPPDATA%\.net\Dagger\<hash>\), NOT
-        // to where Dagger.exe physically lives — so an appsettings.json sitting next to
+        // self-extracted bundle temp dir (e.g. %LOCALAPPDATA%\.net\dagger\<hash>\), NOT
+        // to where dagger.exe physically lives — so an appsettings.json sitting next to
         // the exe would never be read. Resolve from Environment.ProcessPath instead when
         // it looks like a real exe (i.e. not `dotnet` hosting a dll).
         string contentRoot;
@@ -57,7 +57,7 @@ public static class Program
         var mode = ModeDetector.Detect(args, isWindowsService);
 
         // Console sink routing per mode:
-        //   CLI         — route everything to stderr so `Dagger.exe "..." > out.txt` only captures the reply.
+        //   CLI         — route everything to stderr so `dagger.exe "..." > out.txt` only captures the reply.
         //   Interactive — fully silenced (restricted to Fatal, and even those go to stderr) so log
         //                 lines never interleave with the streaming chat output. The file sink keeps everything.
         //   Service / WindowsService — normal: Information+ on stdout for terminal/container log capture.

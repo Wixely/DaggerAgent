@@ -36,7 +36,7 @@ public sealed class CliRunner
         };
         root.Subcommands.Add(runCmd);
 
-        // Allow bare invocation `Dagger.exe "do this"` (no `run` subcommand) and stdin-only
+        // Allow bare invocation `dagger.exe "do this"` (no `run` subcommand) and stdin-only
         // invocation (no args) — both re-route to the `run` subcommand.
         if (args.Length == 0 || !args[0].Equals("run", StringComparison.OrdinalIgnoreCase))
         {
@@ -107,7 +107,7 @@ public sealed class CliRunner
         try
         {
             var response = await agent.RunTurnAsync(state, prompt!, cancellationToken).ConfigureAwait(false);
-            // Strip inline <think>...</think> from the visible reply so piping (`Dagger.exe "..." > out.txt`)
+            // Strip inline <think>...</think> from the visible reply so piping (`dagger.exe "..." > out.txt`)
             // captures just the answer. TextReasoningContent (the OpenAI/LM-Studio reasoning channel) is
             // already excluded from response.Text by MEAI.
             var text = Agent.ThinkingSplitter.StripThinking(response.Text ?? "");

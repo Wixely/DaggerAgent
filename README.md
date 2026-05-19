@@ -133,7 +133,7 @@ Tool names are surfaced to the LLM as `mcp.{Server-Name}.{tool}`; e.g. the files
 
 ```cmd
 dotnet publish -c Release -o publish
-sc.exe create DaggerAgent binPath= "%CD%\publish\Dagger.exe serve" start= auto
+sc.exe create DaggerAgent binPath= "%CD%\publish\dagger.exe serve" start= auto
 sc.exe start DaggerAgent
 ```
 
