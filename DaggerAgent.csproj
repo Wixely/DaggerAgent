@@ -3,11 +3,11 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Daggeragent</RootNamespace>
-    <AssemblyName>Dagger</AssemblyName>
+    <AssemblyName>dagger</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>false</InvariantGlobalization>
-    <!-- Embed icon.ico in the PE header so Windows Explorer / taskbar show it on Dagger.exe. -->
+    <!-- Embed icon.ico in the PE header so Windows Explorer / taskbar show it on dagger.exe. -->
     <ApplicationIcon>icon.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -19,7 +19,7 @@
     <None Update="appsettings*.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- Embed icon.ico as a manifest resource so the runtime can read its bytes
          (served at /favicon.ico, used to set the console window icon).
-         The file ships only inside Dagger.dll/Dagger.exe — never as a sibling artifact. -->
+         The file ships only inside dagger.dll/dagger.exe — never as a sibling artifact. -->
     <EmbeddedResource Include="icon.ico" LogicalName="Dagger.icon.ico" />
     <None Remove="icon.ico" />
   </ItemGroup>

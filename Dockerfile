@@ -15,4 +15,4 @@ ENV ASPNETCORE_URLS=http://0.0.0.0:5090 \
     DAGGER_Jobs__ConnectionString="Data Source=/data/jobs.db"
 VOLUME ["/data", "/app/logs"]
 EXPOSE 5090
-ENTRYPOINT ["dotnet", "Dagger.dll", "serve"]
+ENTRYPOINT ["dotnet", "dagger.dll", "serve"]
