@@ -1,0 +1,81 @@
+{
+  "version": "0.2.0",
+  "inputs": [
+    {
+      "id": "jobId",
+      "type": "promptString",
+      "description": "Job id to resume"
+    },
+    {
+      "id": "prompt",
+      "type": "promptString",
+      "description": "Prompt for CLI mode"
+    }
+  ],
+  "configurations": [
+    {
+      "name": "DaggerAgent — Interactive",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/bin/Debug/net10.0/Dagger.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "DaggerAgent — CLI (prompt)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/bin/Debug/net10.0/Dagger.dll",
+      "args": [ "run", "--prompt", "${input:prompt}" ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "DaggerAgent — CLI (resume)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/bin/Debug/net10.0/Dagger.dll",
+      "args": [ "run", "--resume", "${input:jobId}", "--prompt", "Continue." ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    {
+      "name": "DaggerAgent — Service",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/bin/Debug/net10.0/Dagger.dll",
+      "args": [ "serve" ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime": "Information",
+        "DAGGER_Server__Port": "5090"
+      }
+    },
+    {
+      "name": ".NET Core Attach",
+      "type": "coreclr",
+      "request": "attach"
+    }
+  ]
+}
