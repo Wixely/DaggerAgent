@@ -458,21 +458,79 @@ public sealed class InteractiveRunner
     /// Push the model / endpoint / tools / job / turn block into the chat region —
     /// triggered by F1. Cheap to recompute from current state on every press.
     /// </summary>
-    private void ShowInfoInChat(ConversationState state, OpenAIOptions openAi, McpClientHost mcpHost, BuiltInToolRegistry builtIns)
+    private async Task ShowInfoInChatAsync(ConversationState state, OpenAIOptions openAi, McpClientHost mcpHost, BuiltInToolRegistry builtIns, CancellationToken ct)
     {
         var builtInCount = builtIns.ForAgent(state.Id, state.Depth).Count;
         var mcpCount = mcpHost.AllTools.Count;
+        var mcpServers = mcpHost.ConnectionStatuses;
+        var livePings = await PingConnectedMcpServersAsync(mcpHost, mcpServers, ct).ConfigureAwait(false);
         _chat.AddLine("[grey]── info ──[/]");
         _chat.AddLine($"  [grey]provider[/]  {Markup.Escape(openAi.Provider)}");
         _chat.AddLine($"  [grey]model[/]     [bold]{Markup.Escape(state.Model)}[/]");
         _chat.AddLine($"  [grey]endpoint[/]  [dim]{Markup.Escape(openAi.BaseUrl)}[/]");
         _chat.AddLine($"  [grey]tools[/]     {builtInCount} built-in + {mcpCount} mcp = {builtInCount + mcpCount} total");
+        if (mcpServers.Count == 0)
+        {
+            _chat.AddLine("  [grey]mcp[/]       no servers configured");
+        }
+        else
+        {
+            _chat.AddLine("  [grey]mcp[/]       servers");
+            foreach (var server in mcpServers)
+            {
+                var status = server.Status;
+                if (string.Equals(status, "connected", StringComparison.OrdinalIgnoreCase) &&
+                    livePings.TryGetValue(server.Name, out var live) &&
+                    !live)
+                {
+                    status = "unreachable";
+                }
+
+                var color = McpStatusColor(status);
+                var tools = server.ToolCount == 1 ? "1 tool" : $"{server.ToolCount} tools";
+                var detail = string.IsNullOrWhiteSpace(server.Detail) ? "" : $" [dim]({Markup.Escape(server.Detail)})[/]";
+                _chat.AddLine($"    - [bold]{Markup.Escape(server.Name)}[/] [{color}]{Markup.Escape(status)}[/] ({tools}) [dim]{Markup.Escape(server.Transport)}[/]{detail}");
+            }
+        }
         _chat.AddLine($"  [grey]job[/]       [dim]{Markup.Escape(state.Id)}[/]");
         _chat.AddLine($"  [grey]turn[/]      {state.TurnsTaken}");
         if (state.LastTurnTotalTokens > 0)
             _chat.AddLine($"  [grey]last turn[/] {state.LastTurnTotalTokens} tk, {state.LastTurnElapsedMs} ms");
         _chat.AddLine($"  [grey]totals[/]    in={state.TotalInputTokens} out={state.TotalOutputTokens} cost=${state.TotalCostUsd:F4}");
     }
+
+    private static async Task<Dictionary<string, bool>> PingConnectedMcpServersAsync(
+        McpClientHost mcpHost,
+        IReadOnlyList<McpServerConnectionInfo> servers,
+        CancellationToken ct)
+    {
+        var connected = servers
+            .Where(s => string.Equals(s.Status, "connected", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (connected.Count == 0)
+        {
+            return new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var results = await Task.WhenAll(connected.Select(async server =>
+        {
+            var ok = await mcpHost.PingAsync(server.Name, TimeSpan.FromMilliseconds(750), ct).ConfigureAwait(false);
+            return (server.Name, ok);
+        })).ConfigureAwait(false);
+
+        return results.ToDictionary(r => r.Name, r => r.ok, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string McpStatusColor(string status) =>
+        status.ToLowerInvariant() switch
+        {
+            "connected" => "green",
+            "unreachable" => "yellow",
+            "skipped" => "yellow",
+            "failed" => "red",
+            "disabled" => "grey",
+            _ => "grey",
+        };
 
     private IRenderable BuildChat(int height)
     {
@@ -1071,7 +1129,7 @@ public sealed class InteractiveRunner
 
         if (key.Key == ConsoleKey.F1)
         {
-            ShowInfoInChat(state, openAi, mcpHost, builtIns);
+            await ShowInfoInChatAsync(state, openAi, mcpHost, builtIns, ct).ConfigureAwait(false);
             Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
             return;
         }

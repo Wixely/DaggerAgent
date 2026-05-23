@@ -14,6 +14,7 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
     private readonly ILogger<McpClientHost> _log;
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<AITool>> _tools = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, McpServerConnectionInfo> _connectionStatuses = new(StringComparer.OrdinalIgnoreCase);
 
     public McpClientHost(IOptions<McpOptions> options, ILoggerFactory loggerFactory, ILogger<McpClientHost> log)
     {
@@ -25,6 +26,9 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
     public IReadOnlyList<AITool> AllTools => _tools.Values.SelectMany(t => t).ToList();
 
     public IReadOnlyDictionary<string, McpClient> Clients => _clients;
+
+    public IReadOnlyList<McpServerConnectionInfo> ConnectionStatuses =>
+        _connectionStatuses.Values.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
     public async Task<bool> PingAsync(string serverName, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
@@ -46,11 +50,16 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
     {
         foreach (var server in _options.Servers)
         {
-            if (!server.Enabled) continue;
+            if (!server.Enabled)
+            {
+                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "disabled", DescribeTransport(server), 0);
+                continue;
+            }
             var hasUrl = !string.IsNullOrWhiteSpace(server.Url);
             var hasCmd = !string.IsNullOrWhiteSpace(server.Command);
             if (!hasUrl && !hasCmd)
             {
+                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "skipped", "not configured", 0, "missing Url or Command");
                 _log.LogWarning("MCP server {Server} has neither Url nor Command — skipping", server.Name);
                 continue;
             }
@@ -100,11 +109,13 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
 
                 var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 _tools[server.Name] = tools.Cast<AITool>().ToList();
+                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "connected", label, tools.Count);
 
                 _log.LogInformation("MCP server {Server} connected via {Transport} with {ToolCount} tool(s)", server.Name, label, tools.Count);
             }
             catch (Exception ex)
             {
+                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "failed", DescribeTransport(server), 0, ex.Message);
                 _log.LogError(ex, "Failed to connect to MCP server {Server} (Url='{Url}', Command='{Command}')", server.Name, server.Url, server.Command);
             }
         }
@@ -121,4 +132,18 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
         }
         _clients.Clear();
     }
+
+    private static string DescribeTransport(McpServerConfig server)
+    {
+        if (!string.IsNullOrWhiteSpace(server.Url)) return server.Url;
+        if (!string.IsNullOrWhiteSpace(server.Command)) return $"stdio: {server.Command} {string.Join(' ', server.Arguments)}".TrimEnd();
+        return "not configured";
+    }
 }
+
+public sealed record McpServerConnectionInfo(
+    string Name,
+    string Status,
+    string Transport,
+    int ToolCount,
+    string? Detail = null);
