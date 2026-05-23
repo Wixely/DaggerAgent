@@ -9,30 +9,63 @@ namespace Daggeragent.Mcp;
 
 public sealed class McpClientHost : IHostedService, IAsyncDisposable
 {
-    private readonly McpOptions _options;
+    private readonly IOptionsMonitor<McpOptions> _options;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<McpClientHost> _log;
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private readonly object _gate = new();
     private readonly Dictionary<string, McpClient> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<AITool>> _tools = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpServerConnectionInfo> _connectionStatuses = new(StringComparer.OrdinalIgnoreCase);
 
-    public McpClientHost(IOptions<McpOptions> options, ILoggerFactory loggerFactory, ILogger<McpClientHost> log)
+    public McpClientHost(IOptionsMonitor<McpOptions> options, ILoggerFactory loggerFactory, ILogger<McpClientHost> log)
     {
-        _options = options.Value;
+        _options = options;
         _loggerFactory = loggerFactory;
         _log = log;
     }
 
-    public IReadOnlyList<AITool> AllTools => _tools.Values.SelectMany(t => t).ToList();
+    public IReadOnlyList<AITool> AllTools
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _tools.Values.SelectMany(t => t).ToList();
+            }
+        }
+    }
 
-    public IReadOnlyDictionary<string, McpClient> Clients => _clients;
+    public IReadOnlyDictionary<string, McpClient> Clients
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new Dictionary<string, McpClient>(_clients, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+    }
 
-    public IReadOnlyList<McpServerConnectionInfo> ConnectionStatuses =>
-        _connectionStatuses.Values.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    public IReadOnlyList<McpServerConnectionInfo> ConnectionStatuses
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _connectionStatuses.Values.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            }
+        }
+    }
 
     public async Task<bool> PingAsync(string serverName, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        if (!_clients.TryGetValue(serverName, out var client)) return false;
+        McpClient? client;
+        lock (_gate)
+        {
+            if (!_clients.TryGetValue(serverName, out client)) return false;
+        }
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
         try
@@ -48,22 +81,57 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        foreach (var server in _options.Servers)
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await InitializeConfiguredServersAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    public async Task ReloadAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _log.LogInformation("Reloading MCP servers");
+            var clients = ResetConnections();
+            await DisposeClientsAsync(clients).ConfigureAwait(false);
+            await InitializeConfiguredServersAsync(cancellationToken).ConfigureAwait(false);
+            var statuses = ConnectionStatuses;
+            _log.LogInformation("MCP reload complete: {Connected}/{Total} server(s) connected",
+                statuses.Count(s => string.Equals(s.Status, "connected", StringComparison.OrdinalIgnoreCase)),
+                statuses.Count);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    private async Task InitializeConfiguredServersAsync(CancellationToken cancellationToken)
+    {
+        foreach (var server in _options.CurrentValue.Servers)
         {
             if (!server.Enabled)
             {
-                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "disabled", DescribeTransport(server), 0);
+                SetConnectionStatus(new McpServerConnectionInfo(server.Name, "disabled", DescribeTransport(server), 0));
                 continue;
             }
+
             var hasUrl = !string.IsNullOrWhiteSpace(server.Url);
             var hasCmd = !string.IsNullOrWhiteSpace(server.Command);
             if (!hasUrl && !hasCmd)
             {
-                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "skipped", "not configured", 0, "missing Url or Command");
-                _log.LogWarning("MCP server {Server} has neither Url nor Command — skipping", server.Name);
+                SetConnectionStatus(new McpServerConnectionInfo(server.Name, "skipped", "not configured", 0, "missing Url or Command"));
+                _log.LogWarning("MCP server {Server} has neither Url nor Command - skipping", server.Name);
                 continue;
             }
 
+            McpClient? client = null;
             try
             {
                 IClientTransport transport;
@@ -87,9 +155,6 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
                 }
                 else
                 {
-                    // stdio: spawn `Command` with `Arguments` and speak MCP over the child's
-                    // stdin/stdout. Working dir defaults to ours; env vars are merged with the
-                    // parent's at the SDK level.
                     var stdioOpts = new StdioClientTransportOptions
                     {
                         Command = server.Command,
@@ -104,18 +169,21 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
                     label = $"stdio: {server.Command} {string.Join(' ', server.Arguments)}".TrimEnd();
                 }
 
-                var client = await McpClient.CreateAsync(transport, new McpClientOptions(), _loggerFactory, cancellationToken).ConfigureAwait(false);
-                _clients[server.Name] = client;
-
+                client = await McpClient.CreateAsync(transport, new McpClientOptions(), _loggerFactory, cancellationToken).ConfigureAwait(false);
                 var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                _tools[server.Name] = tools.Cast<AITool>().ToList();
-                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "connected", label, tools.Count);
+                SetConnectedServer(server.Name, client, tools.Cast<AITool>().ToList(), label, tools.Count);
+                client = null;
 
                 _log.LogInformation("MCP server {Server} connected via {Transport} with {ToolCount} tool(s)", server.Name, label, tools.Count);
             }
             catch (Exception ex)
             {
-                _connectionStatuses[server.Name] = new McpServerConnectionInfo(server.Name, "failed", DescribeTransport(server), 0, ex.Message);
+                if (client is not null)
+                {
+                    try { await client.DisposeAsync().ConfigureAwait(false); }
+                    catch (Exception disposeEx) { _log.LogWarning(disposeEx, "Error disposing failed MCP client for {Server}", server.Name); }
+                }
+                SetConnectionStatus(new McpServerConnectionInfo(server.Name, "failed", DescribeTransport(server), 0, ex.Message));
                 _log.LogError(ex, "Failed to connect to MCP server {Server} (Url='{Url}', Command='{Command}')", server.Name, server.Url, server.Command);
             }
         }
@@ -125,12 +193,55 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var c in _clients.Values)
+        await _lifecycleLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var clients = ResetConnections();
+            await DisposeClientsAsync(clients).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    private void SetConnectedServer(string name, McpClient client, IReadOnlyList<AITool> tools, string transport, int toolCount)
+    {
+        lock (_gate)
+        {
+            _clients[name] = client;
+            _tools[name] = tools;
+            _connectionStatuses[name] = new McpServerConnectionInfo(name, "connected", transport, toolCount);
+        }
+    }
+
+    private void SetConnectionStatus(McpServerConnectionInfo status)
+    {
+        lock (_gate)
+        {
+            _connectionStatuses[status.Name] = status;
+        }
+    }
+
+    private IReadOnlyList<McpClient> ResetConnections()
+    {
+        lock (_gate)
+        {
+            var clients = _clients.Values.ToList();
+            _clients.Clear();
+            _tools.Clear();
+            _connectionStatuses.Clear();
+            return clients;
+        }
+    }
+
+    private async Task DisposeClientsAsync(IReadOnlyList<McpClient> clients)
+    {
+        foreach (var c in clients)
         {
             try { await c.DisposeAsync().ConfigureAwait(false); }
             catch (Exception ex) { _log.LogWarning(ex, "Error disposing MCP client"); }
         }
-        _clients.Clear();
     }
 
     private static string DescribeTransport(McpServerConfig server)

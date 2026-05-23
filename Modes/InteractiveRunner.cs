@@ -97,6 +97,7 @@ public sealed class InteractiveRunner
         ("/new",            "Start a fresh conversation (clears history)."),
         ("/resume <jobId>", "Load a previous job's state by id (or press F3 to pick from a list)."),
         ("/jobs",           "List the most recent 20 jobs."),
+        ("/mcpreload",      "Reinitialise MCP server connections and tool lists."),
         ("/compress",       "Force a context compression pass right now."),
         ("/help",           "Show this list (or press F2)."),
         ("/exit",           "Quit DaggerAgent."),
@@ -1432,6 +1433,13 @@ public sealed class InteractiveRunner
                 var jobsList = await store.ListAsync(20, ct).ConfigureAwait(false);
                 foreach (var j in jobsList)
                     _chat.AddLine($"[grey]{Markup.Escape(j.Id)}  {j.Status}  {Markup.Escape(j.Model ?? "")}  updated={j.UpdatedAt:u}[/]");
+                Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
+                return true;
+            case "/mcpreload":
+                _chat.AddLine("[dim][[reinitialising MCP servers...]][/]");
+                Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
+                await mcpHost.ReloadAsync(ct).ConfigureAwait(false);
+                await ShowInfoInChatAsync(state, openAi, mcpHost, builtIns, ct).ConfigureAwait(false);
                 Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
                 return true;
             case "/resume":
