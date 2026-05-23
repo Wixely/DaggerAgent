@@ -136,6 +136,7 @@ public static class Program
 
             if (mode is AppMode.Service or AppMode.WindowsService)
             {
+                app.UseServiceTrafficLogging();
                 app.UseSerilogRequestLogging();
                 app.UseApiKeyAuth();
                 app.MapLanding();
