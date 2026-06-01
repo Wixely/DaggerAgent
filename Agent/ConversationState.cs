@@ -45,4 +45,12 @@ public sealed class ConversationState
     /// the rest of state in the SQLite blob.
     /// </summary>
     public string WorkingDirectory { get; set; } = "";
+
+    /// <summary>
+    /// Id of the LLM endpoint this job should run against (matches an <see cref="Configuration.EndpointConfig.Id"/>).
+    /// Null / empty falls back to <c>EndpointsOptions.DefaultId</c>, then to the first enabled endpoint,
+    /// then to the legacy <c>OpenAIOptions</c>. Lets each job stick with whichever provider it was
+    /// started against even if the global default changes mid-session.
+    /// </summary>
+    public string? EndpointId { get; set; }
 }

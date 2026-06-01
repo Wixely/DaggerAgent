@@ -72,6 +72,25 @@ public sealed class ToolsOptions
     /// Set to 0 (or a value above <see cref="MaxFileBytes"/>) to disable.
     /// </summary>
     public int ReadFileSummaryThresholdBytes { get; set; } = 50_000;
+
+    /// <summary>
+    /// When true, the <c>delegate_to_claude</c> and <c>delegate_to_codex</c> tools are
+    /// registered — the agent can shell out to those CLIs as one-shot specialist sub-agents.
+    /// Off by default because the spawned CLI runs with its own auth (uses the user's
+    /// subscription, not ours), can take arbitrary cost/time, and counts as an external
+    /// process. The set of MCP servers visible to the delegated CLI is controlled per-server
+    /// via <see cref="McpServerConfig.PassthroughToCli"/>.
+    /// </summary>
+    public bool AllowCliDelegation { get; set; }
+
+    /// <summary>
+    /// Any tool result whose string output exceeds this many UTF-16 characters is offloaded:
+    /// the full payload is held in <c>ToolResultStore</c>, and the model receives a short
+    /// placeholder pointing at <c>read_tool_result</c> / <c>grep_tool_result</c> / etc. instead.
+    /// Stops a single MCP tool from blowing the whole context window. Roughly 4 chars ≈ 1 token,
+    /// so 16 000 ≈ 4 K tokens per offload threshold. Set to 0 to disable.
+    /// </summary>
+    public int MaxToolResultChars { get; set; } = 16_000;
 }
 
 /// <summary>

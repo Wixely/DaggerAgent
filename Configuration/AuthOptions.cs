@@ -26,6 +26,10 @@ public sealed class AuthOptions
         "/",
         "/favicon.ico",
         "/agent/healthz",
+        // The Web UI HTML shell loads without a key; the JS then attaches the configured
+        // header to every API call. The /agent/* JSON endpoints themselves still go through
+        // the auth check when keys are configured.
+        "/agent/ui",
         "/api/version",
         "/v1/models",
     };

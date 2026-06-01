@@ -24,6 +24,7 @@
       "commandName": "Project",
       "dotnetRunMessages": true,
       "launchBrowser": false,
+      "launchUrl": "agent/ui",
       "commandLineArgs": "serve",
       "applicationUrl": "http://localhost:5090",
       "environmentVariables": {

@@ -396,14 +396,7 @@ public sealed class FilesystemTools
         try
         {
             var resolved = ResolveScoped(path);
-            var change = _pending.Get(resolved);
-            if (change is null) return $"Error: no staged change for {path}. Call write_file or edit_file first.";
-
-            var dir = Path.GetDirectoryName(resolved);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            await File.WriteAllTextAsync(resolved, change.NewContent, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-            _pending.Remove(resolved);
-            return $"Applied staged change to {path} ({change.NewContent.Length} chars written).";
+            return await _pending.ConfirmAsync(resolved, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) { return $"Error: {ex.Message}"; }
     }

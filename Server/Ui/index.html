@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark" data-bs-core="modern">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dagger Agent</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="__BASE__/halfmoon.min.css">
+<link rel="stylesheet" href="__BASE__/app.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="app-header">
+    <button id="btn-left-toggle" class="btn btn-sm btn-outline-secondary mobile-only" title="Jobs" type="button">▤</button>
+    <div class="brand">
+      <span class="brand-mark">†</span>
+      <span class="brand-name">Dagger Agent</span>
+    </div>
+    <div class="header-status">
+      <span id="status-pill" class="badge bg-secondary">idle</span>
+      <code id="job-id-label" class="text-muted small"></code>
+    </div>
+    <div class="header-actions">
+      <button id="btn-theme" class="btn btn-sm btn-outline-secondary" title="Toggle light/dark">◐</button>
+      <button id="btn-right-toggle" class="btn btn-sm btn-outline-secondary" title="Show / hide side panel">☰</button>
+    </div>
+  </header>
+
+  <div id="drawer-backdrop" class="drawer-backdrop"></div>
+
+  <main class="app-main">
+
+    <aside class="left-pane">
+      <div class="pane-header">
+        <button id="btn-new-job" class="btn btn-primary btn-sm w-100">+ New job</button>
+      </div>
+      <div class="pane-search">
+        <input id="job-search" type="search" class="form-control form-control-sm" placeholder="Filter jobs…">
+      </div>
+      <ul id="jobs-list" class="job-list"></ul>
+    </aside>
+
+    <section class="center-pane">
+
+      <div id="transcript" class="transcript" aria-live="polite">
+        <div class="empty-state">
+          <h3 class="mb-2">Ready when you are.</h3>
+          <p class="text-muted">Submit a prompt below to start a new job, or pick one from the left.</p>
+          <ul class="text-muted small empty-tips">
+            <li><kbd>Enter</kbd> sends · <kbd>Shift+Enter</kbd> newline · <kbd>Ctrl+Enter</kbd> queues</li>
+            <li>Drag or paste an image into the composer to attach it</li>
+            <li>Flip <em>Preview writes</em> to require approval before files change</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="composer" id="composer">
+
+        <div id="queue-strip" class="queue-strip is-empty">
+          <div class="queue-strip-title">Queued prompts</div>
+          <ul id="queue-list" class="queue-list"></ul>
+        </div>
+
+        <div id="image-strip" class="image-strip is-empty"></div>
+
+        <div class="composer-row composer-meta">
+          <label class="composer-label">cwd</label>
+          <input id="working-dir" class="form-control form-control-sm composer-cwd" placeholder="working directory (defaults to launch cwd)" list="working-dirs">
+          <datalist id="working-dirs"></datalist>
+          <button id="btn-browse-cwd" class="btn btn-sm btn-outline-secondary" title="Browse the server's filesystem" type="button">📁</button>
+        </div>
+        <div class="composer-row composer-meta">
+          <label class="composer-label">endpoint</label>
+          <select id="endpoint-select" class="form-select form-select-sm composer-endpoint" title="Which LLM endpoint to send this turn to. Falls back to the active default.">
+            <option value="">(use active default)</option>
+          </select>
+          <label class="composer-label">model</label>
+          <input id="model-input" class="form-control form-control-sm composer-model" placeholder="(endpoint default)">
+        </div>
+
+        <div class="composer-toggles">
+          <label class="form-check form-switch composer-toggle" title="Force the agent to make a plan before tool calls">
+            <input id="t-plan" type="checkbox" class="form-check-input">
+            <span class="form-check-label">Plan</span>
+          </label>
+          <label class="form-check form-switch composer-toggle" title="Stage writes and require approval">
+            <input id="t-preview" type="checkbox" class="form-check-input">
+            <span class="form-check-label">Preview writes</span>
+          </label>
+          <label class="form-check form-switch composer-toggle" title="Enable the shell-exec tool">
+            <input id="t-shell" type="checkbox" class="form-check-input">
+            <span class="form-check-label">Shell</span>
+          </label>
+          <label class="form-check form-switch composer-toggle" title="Block every mutating tool">
+            <input id="t-readonly" type="checkbox" class="form-check-input">
+            <span class="form-check-label">Read-only</span>
+          </label>
+        </div>
+
+        <div class="composer-input-row">
+          <textarea id="prompt-box" class="form-control prompt-box" rows="3" placeholder="Ask the agent to do something… (Enter sends, Shift+Enter newline. Submits while busy queue automatically — Ctrl+Enter to queue from idle.)"></textarea>
+          <div class="composer-buttons">
+            <input id="image-input" type="file" multiple accept="image/*" hidden>
+            <button id="btn-image" class="btn btn-sm btn-outline-secondary" title="Attach image" aria-label="Attach image">📎</button>
+            <button id="btn-send" class="btn btn-primary" title="Send (Enter)">Send</button>
+            <button id="btn-cancel" class="btn btn-danger d-none" title="Cancel the current turn">Stop</button>
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
+    <aside id="right-pane" class="right-pane">
+      <ul class="nav nav-pills nav-fill right-tabs" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-tab="endpoints" type="button">Endp</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="mcp" type="button">MCP</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="triggers" type="button">Trig</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="tools" type="button">Tools</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="commands" type="button">Cmds</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="settings" type="button">Set</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="plan" type="button">Plan</button></li>
+        <li class="nav-item"><button class="nav-link" data-tab="writes" type="button">Writes</button></li>
+      </ul>
+      <div class="tab-content right-tab-content">
+        <div id="tab-endpoints" class="tab-pane active">
+          <div class="tab-actions">
+            <button id="btn-endpoint-add" class="btn btn-sm btn-outline-primary" type="button">+ Add endpoint</button>
+          </div>
+          <div id="endpoints-list" class="endpoints-list"></div>
+        </div>
+        <div id="tab-mcp" class="tab-pane">
+          <div class="tab-actions">
+            <button id="btn-mcp-add" class="btn btn-sm btn-outline-primary" type="button">+ Add server</button>
+            <button id="btn-mcp-reload" class="btn btn-sm btn-outline-primary" type="button">↻ Reload all</button>
+          </div>
+          <div id="mcp-list" class="mcp-list"></div>
+        </div>
+        <div id="tab-triggers" class="tab-pane">
+          <form id="triggers-options-form" class="endpoint-form triggers-options-form"></form>
+          <div class="tab-actions">
+            <button id="btn-trigger-add" class="btn btn-sm btn-outline-primary" type="button">+ Add source</button>
+          </div>
+          <div id="triggers-sources-list" class="endpoints-list"></div>
+        </div>
+        <div id="tab-tools" class="tab-pane">
+          <div id="tools-list" class="tools-list"></div>
+        </div>
+        <div id="tab-commands" class="tab-pane">
+          <ul id="commands-list" class="commands-list"></ul>
+        </div>
+        <div id="tab-settings" class="tab-pane">
+          <form id="settings-form" class="settings-form"></form>
+        </div>
+        <div id="tab-plan" class="tab-pane">
+          <div id="plan-display" class="plan-display empty">
+            <p class="text-muted small">No plan yet for this job. Plans show up when the agent calls <code>make_plan</code>.</p>
+          </div>
+        </div>
+        <div id="tab-writes" class="tab-pane">
+          <div id="writes-list" class="writes-list empty">
+            <p class="text-muted small">No staged writes. Enable <em>Preview writes</em> to require approval before files change.</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </main>
+
+  <dialog id="folder-dialog" class="folder-dialog">
+    <div class="folder-dialog-head">
+      <h3>Pick a working directory</h3>
+      <p class="text-muted small">Browsing the server's filesystem. The agent will be jailed to whatever you pick.</p>
+    </div>
+    <div class="folder-dialog-path">
+      <code id="folder-current-path"></code>
+    </div>
+    <ul id="folder-entries" class="folder-entries"></ul>
+    <div class="folder-dialog-actions">
+      <button id="folder-cancel" class="btn btn-sm btn-outline-secondary" type="button">Cancel</button>
+      <button id="folder-select" class="btn btn-sm btn-primary" type="button">Use this folder</button>
+    </div>
+  </dialog>
+
+  <dialog id="api-key-dialog" class="api-key-dialog">
+    <form method="dialog">
+      <h3>API key required</h3>
+      <p class="text-muted small">The server rejected the request. Enter the API key configured in <code>Auth:ApiKeys</code>.</p>
+      <input id="api-key-input" type="password" class="form-control" placeholder="X-Api-Key…" autocomplete="off">
+      <div class="dialog-actions">
+        <button value="cancel" class="btn btn-sm btn-outline-secondary">Cancel</button>
+        <button value="save" class="btn btn-sm btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+</div>
+<!-- Markdown renderer + sanitiser. Loaded before app.js so the module can read the
+     globals they install (window.marked, window.DOMPurify). -->
+<script src="__BASE__/marked.min.js"></script>
+<script src="__BASE__/purify.min.js"></script>
+<script type="module" src="__BASE__/app.js"></script>
+</body>
+</html>

@@ -22,6 +22,12 @@
          The file ships only inside dagger.dll/dagger.exe — never as a sibling artifact. -->
     <EmbeddedResource Include="icon.ico" LogicalName="Dagger.icon.ico" />
     <None Remove="icon.ico" />
+    <!-- Web UI assets. The LogicalName transform flattens subdirectories into dot-separated
+         resource names — Server\Ui\app.js becomes Dagger.ui.app.js, served by EmbeddedAssets.TryGetUiAsset. -->
+    <EmbeddedResource Include="Server\Ui\**\*"
+                      LogicalName="Dagger.ui.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.'))%(Filename)%(Extension)" />
+    <None Remove="Server\Ui\**\*" />
+    <Content Remove="Server\Ui\**\*" />
   </ItemGroup>
 
   <ItemGroup>

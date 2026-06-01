@@ -39,44 +39,49 @@ public sealed class TriggerService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_options.Enabled)
-        {
-            _log.LogInformation("TriggerService disabled (Triggers:Enabled=false)");
-            return;
-        }
-        if (_options.Sources.Count == 0)
-        {
-            _log.LogWarning("TriggerService enabled but no Triggers:Sources configured — nothing to poll");
-            return;
-        }
-
+        // Run the loop unconditionally so that flipping Enabled / adding a Source from the
+        // web UI takes effect on the next cycle without restarting the host. Each iteration
+        // re-reads the live IOptions snapshot. When disabled we still sleep, just don't poll.
         await _state.InitializeAsync(stoppingToken).ConfigureAwait(false);
-        _log.LogInformation("TriggerService starting — {Count} source(s), phrase=\"{Phrase}\", interval={Interval}s",
-            _options.Sources.Count, _options.Phrase, _options.PollIntervalSeconds);
 
         // Give the MCP host a moment to finish connecting on first cycle.
         try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 
+        bool? lastActive = null;
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
+            var active = _options.Enabled && _options.Sources.Count > 0;
+            if (lastActive != active)
             {
-                await PollAllAsync(stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, "Trigger poll cycle failed");
+                if (active)
+                    _log.LogInformation("TriggerService active — {Count} source(s), phrase=\"{Phrase}\", interval={Interval}s",
+                        _options.Sources.Count, _options.Phrase, _options.PollIntervalSeconds);
+                else if (!_options.Enabled)
+                    _log.LogInformation("TriggerService idle (Triggers:Enabled=false)");
+                else
+                    _log.LogInformation("TriggerService idle (no Sources configured)");
+                lastActive = active;
             }
 
-            try
+            if (active)
             {
-                await Task.Delay(TimeSpan.FromSeconds(_options.PollIntervalSeconds), stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await PollAllAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Trigger poll cycle failed");
+                }
             }
+
+            // Bound the sleep so a config edit raising/lowering the interval is noticed
+            // within ~30s even when we were sleeping a longer interval at the time.
+            var interval = Math.Clamp(_options.PollIntervalSeconds, 5, 3600);
+            var sleep = active ? TimeSpan.FromSeconds(interval) : TimeSpan.FromSeconds(Math.Min(30, interval));
+            try { await Task.Delay(sleep, stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
         }
     }
@@ -383,10 +388,33 @@ public sealed class TriggerService : BackgroundService
         using var scope = _services.CreateScope();
         var agent = scope.ServiceProvider.GetRequiredService<LlmAgent>();
         var openAi = scope.ServiceProvider.GetRequiredService<IOptions<OpenAIOptions>>().Value;
+        var endpoints = scope.ServiceProvider.GetRequiredService<IOptions<EndpointsOptions>>().Value;
         var agentOpts = scope.ServiceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;
 
-        var model = openAi.DefaultModel;
+        // Resolve per-source endpoint override → chosen endpoint's default model →
+        // legacy OpenAI section. The model used to seed state.Model is whatever the
+        // resolved endpoint considers its default; explicit source.Model wins over that.
+        EndpointConfig? chosenEndpoint = null;
+        if (!string.IsNullOrWhiteSpace(source.EndpointId))
+        {
+            chosenEndpoint = endpoints.Items.FirstOrDefault(e =>
+                string.Equals(e.Id, source.EndpointId, StringComparison.OrdinalIgnoreCase));
+            if (chosenEndpoint is null)
+            {
+                _log.LogWarning(
+                    "Trigger source {Source}: EndpointId='{EndpointId}' not found — falling back to global default",
+                    source.Id, source.EndpointId);
+            }
+        }
+
+        var model = !string.IsNullOrWhiteSpace(source.Model)
+            ? source.Model
+            : (!string.IsNullOrWhiteSpace(chosenEndpoint?.DefaultModel)
+                ? chosenEndpoint!.DefaultModel
+                : openAi.DefaultModel);
+
         var state = agent.CreateState(model);
+        if (chosenEndpoint is not null) state.EndpointId = chosenEndpoint.Id;
 
         var prompt =
             $"{_options.JobPreamble}\n\n" +

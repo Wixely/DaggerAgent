@@ -89,6 +89,21 @@ public sealed class TriggerSource
     /// server's configured default.
     /// </summary>
     public string Scope { get; set; } = "";
+
+    /// <summary>
+    /// Optional endpoint override for jobs spawned from this source. Must match an
+    /// <c>Endpoints.Items[].Id</c>. When blank, the global <c>Endpoints.DefaultId</c>
+    /// applies. Point at a <c>ClaudeCli</c> / <c>CodexCli</c> endpoint to delegate
+    /// triggered tickets to a local CLI agent instead of an API endpoint.
+    /// </summary>
+    public string EndpointId { get; set; } = "";
+
+    /// <summary>
+    /// Optional model override for jobs spawned from this source. When blank, falls
+    /// back to the chosen endpoint's <c>DefaultModel</c> (or, with no endpoint set,
+    /// the legacy <c>OpenAI.DefaultModel</c>).
+    /// </summary>
+    public string Model { get; set; } = "";
 }
 
 public enum TriggerMode

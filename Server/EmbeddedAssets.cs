@@ -1,18 +1,19 @@
-using System.Reflection;
+using System.Collections.Concurrent;
 
 namespace Daggeragent.Server;
 
 /// <summary>
 /// Helpers for reading files embedded into the assembly via the EmbeddedResource itemgroup
-/// in DaggerAgent.csproj. Right now this is just icon.ico; designed so other assets can
-/// slot in later without proliferating helpers.
+/// in DaggerAgent.csproj. Used for icon.ico and the embedded Web UI (Server/Ui/**).
 /// </summary>
 public static class EmbeddedAssets
 {
     private const string IconResourceName = "Dagger.icon.ico";
+    private const string UiPrefix = "Dagger.ui.";
 
     private static byte[]? _iconBytes;
     private static string? _iconTempPath;
+    private static readonly ConcurrentDictionary<string, byte[]> _uiCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary> Raw bytes of the embedded icon.ico. Cached after first read. </summary>
     public static byte[] IconBytes
@@ -43,5 +44,61 @@ public static class EmbeddedAssets
             return _iconTempPath = path;
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Look up an embedded UI asset by relative path (e.g. "index.html", "halfmoon.min.css").
+    /// Maps to manifest resource "Dagger.ui.{path}" — matches the csproj
+    /// EmbeddedResource glob's LogicalName transform. Subdirectory separators map to dots.
+    /// Returns false if the asset isn't embedded.
+    /// </summary>
+    public static bool TryGetUiAsset(string relPath, out byte[] bytes, out string contentType)
+    {
+        bytes = Array.Empty<byte>();
+        contentType = "application/octet-stream";
+        if (string.IsNullOrWhiteSpace(relPath)) return false;
+
+        var normalised = relPath.Replace('\\', '/').Trim('/');
+        // Block obvious path-escape attempts before we even try the manifest.
+        if (normalised.Contains("..", StringComparison.Ordinal)) return false;
+
+        var resourceName = UiPrefix + normalised.Replace('/', '.');
+        if (_uiCache.TryGetValue(resourceName, out var cached))
+        {
+            bytes = cached;
+            contentType = MimeFor(normalised);
+            return true;
+        }
+
+        using var stream = typeof(EmbeddedAssets).Assembly.GetManifestResourceStream(resourceName);
+        if (stream is null) return false;
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        bytes = ms.ToArray();
+        _uiCache[resourceName] = bytes;
+        contentType = MimeFor(normalised);
+        return true;
+    }
+
+    private static string MimeFor(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext switch
+        {
+            ".html" or ".htm" => "text/html; charset=utf-8",
+            ".css" => "text/css; charset=utf-8",
+            ".js" or ".mjs" => "application/javascript; charset=utf-8",
+            ".json" => "application/json; charset=utf-8",
+            ".svg" => "image/svg+xml",
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".ico" => "image/x-icon",
+            ".woff" => "font/woff",
+            ".woff2" => "font/woff2",
+            ".map" => "application/json; charset=utf-8",
+            ".txt" => "text/plain; charset=utf-8",
+            _ => "application/octet-stream",
+        };
     }
 }

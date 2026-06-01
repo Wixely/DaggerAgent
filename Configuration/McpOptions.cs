@@ -37,4 +37,15 @@ public sealed class McpServerConfig
     public Dictionary<string, string> EnvironmentVariables { get; set; } = new();
 
     public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// When true, this MCP server is also exported into the config file handed to
+    /// <c>delegate_to_claude</c> / <c>delegate_to_codex</c> sub-agents — so the spawned CLI
+    /// gets the same tool surface DaggerAgent has. Off by default: only servers explicitly
+    /// marked passthrough leak into the delegated CLI, keeping local-only / privileged
+    /// servers (filesystem, secret stores, etc.) inside DaggerAgent.
+    /// HTTP servers are passed through verbatim; stdio servers spawn fresh subprocesses
+    /// inside the CLI, so anything stateful (sqlite, in-memory caches) won't share state.
+    /// </summary>
+    public bool PassthroughToCli { get; set; }
 }

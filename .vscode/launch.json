@@ -14,6 +14,37 @@
   ],
   "configurations": [
     {
+      // Default when you hit F5 — boots the HTTP server (web UI lives at /agent/ui)
+      // and auto-opens the browser the moment Kestrel announces it's listening.
+      "name": "DaggerAgent — Web UI (default)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/bin/Debug/net10.0/Dagger.dll",
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      // Args / env / applicationUrl are inherited from the "Service" profile in
+      // Properties/launchSettings.json. Browser auto-open is driven by VS Code's
+      // serverReadyAction below rather than the C# extension's launchBrowser:true —
+      // the latter anchors on a line starting with "Now listening on:" but Serilog's
+      // outputTemplate prefixes every stdout line with "[HH:mm:ss INF] SourceContext:",
+      // so the anchored match silently never fires. The regex below is unanchored.
+      "launchSettingsFilePath": "${workspaceFolder}/Properties/launchSettings.json",
+      "launchSettingsProfile": "Service",
+      "serverReadyAction": {
+        "action": "openExternally",
+        // Capture the port from Kestrel's "Now listening on: http://[::]:5090" line.
+        // Tolerates the Serilog timestamp/source-context prefix (unanchored) and the
+        // IPv6 wildcard host that ListenAnyIP() emits.
+        "pattern": "Now listening on:\\s+https?://\\S+:(\\d+)",
+        "uriFormat": "http://localhost:%s/agent/ui"
+      },
+      "presentation": {
+        "order": 1,
+        "group": "1-server"
+      }
+    },
+    {
       "name": "DaggerAgent — Interactive",
       "type": "coreclr",
       "request": "launch",
@@ -26,7 +57,8 @@
       "env": {
         "DOTNET_ENVIRONMENT": "Development",
         "ASPNETCORE_ENVIRONMENT": "Development"
-      }
+      },
+      "presentation": { "order": 2, "group": "2-cli" }
     },
     {
       "name": "DaggerAgent — CLI (prompt)",
@@ -40,7 +72,8 @@
       "env": {
         "DOTNET_ENVIRONMENT": "Development",
         "ASPNETCORE_ENVIRONMENT": "Development"
-      }
+      },
+      "presentation": { "order": 3, "group": "2-cli" }
     },
     {
       "name": "DaggerAgent — CLI (resume)",
@@ -54,28 +87,14 @@
       "env": {
         "DOTNET_ENVIRONMENT": "Development",
         "ASPNETCORE_ENVIRONMENT": "Development"
-      }
-    },
-    {
-      "name": "DaggerAgent — Service",
-      "type": "coreclr",
-      "request": "launch",
-      "preLaunchTask": "build",
-      "program": "${workspaceFolder}/bin/Debug/net10.0/Dagger.dll",
-      "args": [ "serve" ],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "env": {
-        "DOTNET_ENVIRONMENT": "Development",
-        "ASPNETCORE_ENVIRONMENT": "Development",
-        "Serilog__MinimumLevel__Override__Microsoft.Hosting.Lifetime": "Information",
-        "DAGGER_Server__Port": "5090"
-      }
+      },
+      "presentation": { "order": 4, "group": "2-cli" }
     },
     {
       "name": ".NET Core Attach",
       "type": "coreclr",
-      "request": "attach"
+      "request": "attach",
+      "presentation": { "order": 99, "group": "9-misc" }
     }
   ]
 }

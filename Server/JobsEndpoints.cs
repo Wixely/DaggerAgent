@@ -131,5 +131,7 @@ public static class JobsEndpoints
         state.TotalCostUsd,
         state.CreatedAt,
         state.UpdatedAt,
-        state.History.Select(m => new MessageView(m.Role.Value, m.Text ?? "")).ToList());
+        state.History.Select(m => new MessageView(m.Role.Value, m.Text ?? "")).ToList(),
+        WorkingDirectory: string.IsNullOrEmpty(state.WorkingDirectory) ? null : state.WorkingDirectory,
+        EndpointId: state.EndpointId);
 }

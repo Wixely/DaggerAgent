@@ -22,6 +22,7 @@ public sealed class LlmAgent
     private readonly ToolsOptions _toolsOptions;
     private readonly PricingOptions _pricingOptions;
     private readonly HostLaunchInfo _launchInfo;
+    private readonly ToolResultStore _toolResultStore;
     private readonly ILogger<LlmAgent> _log;
 
     public LlmAgent(
@@ -36,6 +37,7 @@ public sealed class LlmAgent
         IOptions<ToolsOptions> toolsOptions,
         IOptions<PricingOptions> pricingOptions,
         HostLaunchInfo launchInfo,
+        ToolResultStore toolResultStore,
         ILogger<LlmAgent> log)
     {
         _chatClientFactory = chatClientFactory;
@@ -49,7 +51,30 @@ public sealed class LlmAgent
         _toolsOptions = toolsOptions.Value;
         _pricingOptions = pricingOptions.Value;
         _launchInfo = launchInfo;
+        _toolResultStore = toolResultStore;
         _log = log;
+    }
+
+    /// <summary>
+    /// Apply the standard per-turn tool decorator stack: caching (loop detection +
+    /// memoise within a turn), then offloading (stash oversized string results into
+    /// <see cref="ToolResultStore"/>). The offloader is skipped for the
+    /// <c>read_tool_result</c> / <c>head_tool_result</c> / ... consumer tools so reading
+    /// a 16K slice doesn't recursively offload its own response.
+    /// </summary>
+    private List<AITool> WrapTools(IEnumerable<AITool> raw, string jobId, Tools.TurnToolCache cache)
+    {
+        var threshold = _toolsOptions.MaxToolResultChars;
+        var wrapped = new List<AITool>();
+        foreach (var t in raw)
+        {
+            if (t is not AIFunction f) { wrapped.Add(t); continue; }
+            AIFunction outer = new Tools.CachingAIFunction(f, cache);
+            if (threshold > 0 && !Tools.ToolResultTools.ConsumerToolNames.Contains(f.Name))
+                outer = new Tools.OffloadingAIFunction(outer, _toolResultStore, jobId, threshold);
+            wrapped.Add(outer);
+        }
+        return wrapped;
     }
 
     public ConversationState CreateState(string model, string? systemPrompt = null, string? parentJobId = null, int depth = 0)
@@ -101,7 +126,7 @@ public sealed class LlmAgent
         rawTools = RouteTools(rawTools, userMessage, state);
 
         var cache = new Tools.TurnToolCache();
-        var tools = rawTools.Select(t => t is AIFunction f ? (AITool)new Tools.CachingAIFunction(f, cache) : t).ToList();
+        var tools = WrapTools(rawTools, state.Id, cache);
 
         var options = new ChatOptions
         {
@@ -109,10 +134,15 @@ public sealed class LlmAgent
             Tools = tools.Count > 0 ? tools : null,
         };
 
-        var client = _chatClientFactory.Create(state.Model);
+        // Sub-agents get a tighter per-request iteration cap than top-level turns so a
+        // confused sub-agent surrenders earlier instead of holding the parent's tool call open.
+        var iterationCap = state.Depth > 0
+            ? _agentOptions.MaxTurnsPerSubAgent
+            : _agentOptions.MaxTurnsPerInvocation;
+        var client = _chatClientFactory.Create(state.Model, iterationCap, state.EndpointId, state.Id);
 
-        _log.LogDebug("Running turn for job {JobId} (depth={Depth}, tools={ToolCount}, model={Model})",
-            state.Id, state.Depth, tools.Count, state.Model);
+        _log.LogDebug("Running turn for job {JobId} (depth={Depth}, tools={ToolCount}, model={Model}, iterCap={IterCap})",
+            state.Id, state.Depth, tools.Count, state.Model, iterationCap);
 
         ChatResponse response;
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -156,12 +186,32 @@ public sealed class LlmAgent
         return response;
     }
 
+    public IAsyncEnumerable<ChatResponseUpdate> RunStreamingTurnAsync(
+        ConversationState state,
+        string userMessage,
+        CancellationToken cancellationToken = default)
+        => RunStreamingTurnAsync(state, userMessage, attachments: null, cancellationToken);
+
+    /// <summary>
+    /// Overload that accepts non-text user content (e.g. images via <see cref="DataContent"/>)
+    /// alongside the text prompt. Used by the web UI to send multimodal turns.
+    /// </summary>
     public async IAsyncEnumerable<ChatResponseUpdate> RunStreamingTurnAsync(
         ConversationState state,
         string userMessage,
+        IReadOnlyList<AIContent>? attachments,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        state.History.Add(new ChatMessage(ChatRole.User, userMessage));
+        if (attachments is { Count: > 0 })
+        {
+            var parts = new List<AIContent> { new TextContent(userMessage) };
+            parts.AddRange(attachments);
+            state.History.Add(new ChatMessage(ChatRole.User, parts));
+        }
+        else
+        {
+            state.History.Add(new ChatMessage(ChatRole.User, userMessage));
+        }
         state.Status = JobStatus.Running;
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
@@ -172,7 +222,7 @@ public sealed class LlmAgent
         rawTools = RouteTools(rawTools, userMessage, state);
 
         var cache = new Tools.TurnToolCache();
-        var tools = rawTools.Select(t => t is AIFunction f ? (AITool)new Tools.CachingAIFunction(f, cache) : t).ToList();
+        var tools = WrapTools(rawTools, state.Id, cache);
 
         var options = new ChatOptions
         {
@@ -180,7 +230,10 @@ public sealed class LlmAgent
             Tools = tools.Count > 0 ? tools : null,
         };
 
-        var client = _chatClientFactory.Create(state.Model);
+        var iterationCap = state.Depth > 0
+            ? _agentOptions.MaxTurnsPerSubAgent
+            : _agentOptions.MaxTurnsPerInvocation;
+        var client = _chatClientFactory.Create(state.Model, iterationCap, state.EndpointId, state.Id);
         var collected = new List<ChatResponseUpdate>();
 
         // Tool-time accounting: we want the per-turn tokens-per-second to reflect raw

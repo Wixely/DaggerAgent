@@ -26,6 +26,8 @@ public static class ToolCategorizer
         System,     // pwd, which, list_processes
         Plan,       // make_plan, update_plan  (always-on when ForcePlan=true)
         Subagent,   // spawn_subagent  (always-on)
+        ToolResults,// read_tool_result, head/tail/grep/list — always-on consumers of OffloadingAIFunction stashes
+        CliDelegation, // delegate_to_claude, delegate_to_codex — shell out to external CLI agents
         Mcp,        // anything from McpToolProvider — treated as a single bucket
         Unknown,    // any tool we don't recognise — included by default so MCP servers
                     // that supply tools we haven't classified still work.
@@ -67,6 +69,15 @@ public static class ToolCategorizer
         ["update_plan"] = Category.Plan,
 
         ["spawn_subagent"] = Category.Subagent,
+
+        ["read_tool_result"] = Category.ToolResults,
+        ["head_tool_result"] = Category.ToolResults,
+        ["tail_tool_result"] = Category.ToolResults,
+        ["grep_tool_result"] = Category.ToolResults,
+        ["list_tool_results"] = Category.ToolResults,
+
+        ["delegate_to_claude"] = Category.CliDelegation,
+        ["delegate_to_codex"] = Category.CliDelegation,
     };
 
     public static Category CategoryFor(string toolName)
@@ -171,7 +182,10 @@ public static class ToolCategorizer
     /// </summary>
     public static HashSet<Category> Route(string userMessage, bool includePlan)
     {
-        var enabled = new HashSet<Category> { Category.Subagent, Category.Mcp, Category.Unknown };
+        // ToolResults consumer tools are always-on so the model can dig into an offloaded
+        // result regardless of what the routing heuristics decided this turn was about.
+        // CliDelegation is also always-on (gated separately by AllowCliDelegation at registration).
+        var enabled = new HashSet<Category> { Category.Subagent, Category.ToolResults, Category.CliDelegation, Category.Mcp, Category.Unknown };
         if (includePlan) enabled.Add(Category.Plan);
 
         if (string.IsNullOrWhiteSpace(userMessage))

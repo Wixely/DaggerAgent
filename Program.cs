@@ -134,6 +134,11 @@ public static class Program
 
             var app = builder.Build();
 
+            // Apply persisted runtime overrides (endpoints, MCP servers) before anything reads
+            // those options. MCP host starts later via IHostedService so picks up the new server
+            // list on first connect; ChatClientFactory reads endpoints per-call so no warm-up needed.
+            await app.Services.GetRequiredService<RuntimeConfigStore>().LoadAsync().ConfigureAwait(false);
+
             if (mode is AppMode.Service or AppMode.WindowsService)
             {
                 app.UseServiceTrafficLogging();
@@ -141,6 +146,8 @@ public static class Program
                 app.UseApiKeyAuth();
                 app.MapLanding();
                 app.MapJobsApi(server.Path);
+                app.MapJobsStream(server.Path);
+                app.MapAgentUi(server.Path);
                 app.MapOpenAiCompatApi();
                 app.MapOllamaCompatApi();
 
@@ -212,6 +219,7 @@ public static class Program
     {
         builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection(AgentOptions.SectionName));
         builder.Services.Configure<OpenAIOptions>(builder.Configuration.GetSection(OpenAIOptions.SectionName));
+        builder.Services.Configure<EndpointsOptions>(builder.Configuration.GetSection(EndpointsOptions.SectionName));
         builder.Services.Configure<McpOptions>(builder.Configuration.GetSection(McpOptions.SectionName));
         builder.Services.Configure<ServerOptions>(builder.Configuration.GetSection(ServerOptions.SectionName));
         builder.Services.Configure<JobsOptions>(builder.Configuration.GetSection(JobsOptions.SectionName));
@@ -243,6 +251,11 @@ public static class Program
         builder.Services.AddSingleton<WebTools>();
         builder.Services.AddSingleton<PlanStore>();
         builder.Services.AddSingleton<PlanningTools>();
+        builder.Services.AddSingleton<ToolResultStore>();
+        builder.Services.AddSingleton<ToolResultTools>();
+        builder.Services.AddSingleton<CliSessionStore>();
+        builder.Services.AddSingleton<CliDelegationTools>();
+        builder.Services.AddSingleton<RuntimeConfigStore>();
         builder.Services.AddSingleton<BuiltInToolRegistry>();
 
         builder.Services.AddTransient<LlmAgent>();

@@ -27,6 +27,21 @@ public sealed class AgentOptions
     public int MaxTurnsPerSubAgent { get; set; } = 10;
 
     /// <summary>
+    /// Hard wall-clock backstop for a single <c>spawn_subagent</c> call. When exceeded,
+    /// the sub-agent is cancelled even if it's actively producing output. This catches
+    /// runaway "tool loop forever" cases. Set to 0 to disable.
+    /// </summary>
+    public int SubAgentTimeoutSeconds { get; set; } = 600;
+
+    /// <summary>
+    /// Idle deadline: cancel the sub-agent if no streaming update (text, tool call,
+    /// tool result) arrives for this many seconds. Lets fast-progressing agents keep
+    /// running indefinitely (until the hard backstop) while killing genuinely stuck
+    /// ones quickly so the parent's tool call can return. Set to 0 to disable.
+    /// </summary>
+    public int SubAgentIdleTimeoutSeconds { get; set; } = 45;
+
+    /// <summary>
     /// When true (default), &lt;think&gt;...&lt;/think&gt; blocks emitted by reasoning models
     /// (Qwen3-thinking, DeepSeek-R1, etc.) are stripped from persisted history. Saves context
     /// tokens on subsequent turns. Set false to keep them — useful if you need to audit

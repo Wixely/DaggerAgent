@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using DiffPlex.DiffBuilder;
 using DiffPlex.DiffBuilder.Model;
 
@@ -27,6 +28,24 @@ public sealed class PendingWriteStore
     public IReadOnlyCollection<PendingChange> All() => _pending.Values.ToList();
 
     public int Count => _pending.Count;
+
+    /// <summary>
+    /// Apply a staged change to disk by absolute path. Shared by the <c>confirm_write</c>
+    /// tool (FilesystemTools) and the UI's POST /agent/pending-writes/confirm endpoint so
+    /// both routes resolve, write, and clear identically.
+    /// Returns the human-readable result string used by the tool surface.
+    /// </summary>
+    public async Task<string> ConfirmAsync(string absolutePath, CancellationToken cancellationToken = default)
+    {
+        var change = Get(absolutePath);
+        if (change is null) return $"Error: no staged change for {absolutePath}. Call write_file or edit_file first.";
+
+        var dir = Path.GetDirectoryName(absolutePath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(absolutePath, change.NewContent, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+        Remove(absolutePath);
+        return $"Applied staged change to {change.DisplayPath} ({change.NewContent.Length} chars written).";
+    }
 
     public static string RenderUnifiedDiff(string path, string oldContent, string newContent)
     {
