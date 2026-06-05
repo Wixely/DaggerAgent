@@ -74,6 +74,16 @@ public static class AgentUiEndpoints
             if (patch.DefaultModel is not null) existing.DefaultModel = patch.DefaultModel;
             if (patch.RequestTimeoutSeconds is int t) existing.RequestTimeoutSeconds = t;
             if (patch.Enabled is bool en) existing.Enabled = en;
+            if (patch.ClaudePermissionMode is not null) existing.ClaudePermissionMode = patch.ClaudePermissionMode;
+            if (patch.ClaudeAllowedTools is not null)
+            {
+                existing.ClaudeAllowedTools.Clear();
+                foreach (var s in patch.ClaudeAllowedTools.Where(x => !string.IsNullOrWhiteSpace(x)))
+                    existing.ClaudeAllowedTools.Add(s.Trim());
+            }
+            if (patch.ClaudeDangerouslySkipPermissions is bool skip) existing.ClaudeDangerouslySkipPermissions = skip;
+            if (patch.CodexSandbox is not null) existing.CodexSandbox = patch.CodexSandbox;
+            if (patch.CodexAskForApproval is not null) existing.CodexAskForApproval = patch.CodexAskForApproval;
 
             await store.SaveAsync(ct).ConfigureAwait(false);
             return Results.Json(ToEndpointView(existing), JsonOpts.Default);
@@ -285,6 +295,25 @@ public static class AgentUiEndpoints
             return Results.NoContent();
         });
 
+        // Manually run a single trigger source out-of-band. Behaves like one iteration of the
+        // background loop's per-source poll — same MCP lookup, same per-match dedupe — so calling
+        // it on an idle source spawns nothing, and calling it after new activity spawns jobs.
+        group.MapPost("/triggers/sources/{id}/run", async (
+            string id,
+            Daggeragent.Triggers.TriggerService triggers,
+            CancellationToken ct) =>
+        {
+            var result = await triggers.RunSourceOnceAsync(id, ct).ConfigureAwait(false);
+            if (!result.Ok && result.Error is { } err && err.StartsWith("No trigger source"))
+                return Results.NotFound(new { error = err });
+            return Results.Json(new
+            {
+                ok = result.Ok,
+                spawned = result.Spawned,
+                error = result.Error,
+            }, JsonOpts.Default);
+        });
+
         // ──────────────────────────── tools ────────────────────────────
 
         group.MapGet("/tools", (
@@ -339,18 +368,25 @@ public static class AgentUiEndpoints
                 v.WorkingDirectory, v.AllowAnyPath, v.ReadOnly, v.AllowWrite, v.WritePreview,
                 v.AllowShell, v.MaxFileBytes, v.MaxResults, v.ShellTimeoutSeconds,
                 v.GranularTools, v.ForcePlan, v.ReadFileSummaryThresholdBytes, v.MaxToolResultChars,
-                v.AllowCliDelegation), JsonOpts.Default);
+                v.AllowCliDelegation, v.ClaudeCliPath, v.CodexCliPath), JsonOpts.Default);
         });
 
         // Mutates the singleton IOptions<ToolsOptions> instance in place. Every code path
         // that reads ToolsOptions does so via IOptions<T> (verified by exploration); none
         // use IOptionsMonitor for change tracking, so the mutation is observed everywhere.
-        group.MapPost("/settings", (
+        group.MapPost("/settings", async (
             ToolsOptionsPatch patch,
-            IOptions<ToolsOptions> toolsOpts) =>
+            IOptions<ToolsOptions> toolsOpts,
+            RuntimeConfigStore runtimeStore,
+            CancellationToken ct) =>
         {
             var v = toolsOpts.Value;
-            if (patch.WorkingDirectory is not null) v.WorkingDirectory = patch.WorkingDirectory;
+            var cwdChanged = false;
+            if (patch.WorkingDirectory is not null && patch.WorkingDirectory != v.WorkingDirectory)
+            {
+                v.WorkingDirectory = patch.WorkingDirectory;
+                cwdChanged = true;
+            }
             if (patch.AllowAnyPath is bool ap) v.AllowAnyPath = ap;
             if (patch.ReadOnly is bool ro) v.ReadOnly = ro;
             if (patch.AllowWrite is bool aw) v.AllowWrite = aw;
@@ -364,11 +400,22 @@ public static class AgentUiEndpoints
             if (patch.ReadFileSummaryThresholdBytes is int rsb) v.ReadFileSummaryThresholdBytes = rsb;
             if (patch.MaxToolResultChars is int mtrc) v.MaxToolResultChars = mtrc;
             if (patch.AllowCliDelegation is bool acd) v.AllowCliDelegation = acd;
+            if (patch.ClaudeCliPath is not null) v.ClaudeCliPath = patch.ClaudeCliPath;
+            if (patch.CodexCliPath is not null) v.CodexCliPath = patch.CodexCliPath;
+            // Only persist when cwd actually changed — the rest of ToolsOptions stays
+            // session-scoped (intentional: a hot toggle like AllowShell shouldn't outlive
+            // the current run). Sticky cwd survives restart so successive turns against
+            // the same project don't have to re-type the path each time.
+            if (cwdChanged)
+            {
+                try { await runtimeStore.SaveAsync(ct).ConfigureAwait(false); }
+                catch (Exception) { /* best-effort; in-memory mutation already applied */ }
+            }
             return Results.Json(new ToolsSettingsView(
                 v.WorkingDirectory, v.AllowAnyPath, v.ReadOnly, v.AllowWrite, v.WritePreview,
                 v.AllowShell, v.MaxFileBytes, v.MaxResults, v.ShellTimeoutSeconds,
                 v.GranularTools, v.ForcePlan, v.ReadFileSummaryThresholdBytes, v.MaxToolResultChars,
-                v.AllowCliDelegation), JsonOpts.Default);
+                v.AllowCliDelegation, v.ClaudeCliPath, v.CodexCliPath), JsonOpts.Default);
         });
 
         // ──────────────────────────── pending writes ────────────────────────────
@@ -530,6 +577,13 @@ public static class AgentUiEndpoints
         defaultModel = e.DefaultModel,
         requestTimeoutSeconds = e.RequestTimeoutSeconds,
         enabled = e.Enabled,
+        // CLI-flavour fields — ignored by non-CLI providers but always emitted so the UI form
+        // round-trips them without losing values when switching tabs.
+        claudePermissionMode = e.ClaudePermissionMode,
+        claudeAllowedTools = e.ClaudeAllowedTools,
+        claudeDangerouslySkipPermissions = e.ClaudeDangerouslySkipPermissions,
+        codexSandbox = e.CodexSandbox,
+        codexAskForApproval = e.CodexAskForApproval,
     };
 
     private static object ToTriggerSourceView(TriggerSource s) => new
@@ -585,7 +639,14 @@ internal sealed record EndpointPatch(
     string? ApiKey = null,
     string? DefaultModel = null,
     int? RequestTimeoutSeconds = null,
-    bool? Enabled = null);
+    bool? Enabled = null,
+    // CLI-flavour fields — only meaningful when Provider=ClaudeCli / CodexCli; round-tripped
+    // verbatim otherwise so a tab-flip in the UI doesn't lose configured values.
+    string? ClaudePermissionMode = null,
+    IReadOnlyList<string>? ClaudeAllowedTools = null,
+    bool? ClaudeDangerouslySkipPermissions = null,
+    string? CodexSandbox = null,
+    string? CodexAskForApproval = null);
 
 internal sealed record TriggerOptionsPatch(
     bool? Enabled = null,

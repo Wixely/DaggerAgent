@@ -153,6 +153,15 @@ public sealed class ChatClientFactory
             ? _toolsOptions.WorkingDirectory
             : _launchInfo.OriginalWorkingDirectory;
         var timeout = TimeSpan.FromSeconds(Math.Max(1, endpoint.RequestTimeoutSeconds));
+        var binaryPath = kind == CliChatClient.CliKind.Claude
+            ? _toolsOptions.ClaudeCliPath
+            : _toolsOptions.CodexCliPath;
+        var permission = new CliChatClient.PermissionFlags(
+            ClaudePermissionMode: endpoint.ClaudePermissionMode,
+            ClaudeAllowedTools: endpoint.ClaudeAllowedTools,
+            ClaudeDangerouslySkipPermissions: endpoint.ClaudeDangerouslySkipPermissions,
+            CodexSandbox: endpoint.CodexSandbox,
+            CodexAskForApproval: endpoint.CodexAskForApproval);
         return new CliChatClient(
             kind: kind,
             model: string.IsNullOrWhiteSpace(model) ? null : model,
@@ -161,7 +170,9 @@ public sealed class ChatClientFactory
             cwd: cwd,
             mcp: _mcpOptions,
             sessions: _cliSessions,
-            logger: _loggerFactory.CreateLogger<CliChatClient>());
+            logger: _loggerFactory.CreateLogger<CliChatClient>(),
+            binaryPathOverride: string.IsNullOrWhiteSpace(binaryPath) ? null : binaryPath,
+            permission: permission);
     }
 
     private IChatClient CreateOpenAiCompatibleClient(EndpointConfig endpoint, string model)

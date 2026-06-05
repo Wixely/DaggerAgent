@@ -1,6 +1,6 @@
 namespace Daggeragent.Server;
 
-public sealed record CreateJobRequest(string Prompt, string? System, string? Model);
+public sealed record CreateJobRequest(string Prompt, string? System, string? Model, string? EndpointId = null);
 
 public sealed record CreateJobResponse(string JobId, string Status, string Model, string Text);
 
@@ -71,7 +71,9 @@ public sealed record ToolsOptionsPatch(
     bool? ForcePlan = null,
     int? ReadFileSummaryThresholdBytes = null,
     int? MaxToolResultChars = null,
-    bool? AllowCliDelegation = null);
+    bool? AllowCliDelegation = null,
+    string? ClaudeCliPath = null,
+    string? CodexCliPath = null);
 
 /// <summary>Snapshot of the current ToolsOptions — what GET /agent/settings returns.</summary>
 public sealed record ToolsSettingsView(
@@ -88,7 +90,9 @@ public sealed record ToolsSettingsView(
     bool ForcePlan,
     int ReadFileSummaryThresholdBytes,
     int MaxToolResultChars,
-    bool AllowCliDelegation);
+    bool AllowCliDelegation,
+    string ClaudeCliPath,
+    string CodexCliPath);
 
 /// <summary>Each row of GET /agent/pending-writes — a staged change with a rendered unified diff.</summary>
 public sealed record PendingWriteView(

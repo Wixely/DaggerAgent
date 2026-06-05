@@ -155,6 +155,17 @@ public static class Program
                 await store.InitializeAsync().ConfigureAwait(false);
                 await app.Services.GetRequiredService<MemoryStore>().InitializeAsync().ConfigureAwait(false);
 
+                // Reconcile rows orphaned by the previous run's ungraceful shutdown: anything
+                // marked Running has no in-process driver, so flip them to Paused + Interrupted
+                // so the UI shows accurate status and trigger auto-resume can pick them up.
+                try
+                {
+                    var swept = await store.SweepOrphansAsync().ConfigureAwait(false);
+                    if (swept.Count > 0)
+                        Log.Information("Orphan sweep: marked {Count} job(s) as Paused+Interrupted", swept.Count);
+                }
+                catch (Exception ex) { Log.Warning(ex, "Orphan sweep failed"); }
+
                 Log.Information("DaggerAgent service listening on http://{Host}:{Port}{Path}", server.Host, server.Port, server.Path);
                 await app.RunAsync().ConfigureAwait(false);
                 return 0;
@@ -264,6 +275,10 @@ public static class Program
         builder.Services.AddSingleton<CliRunner>();
 
         builder.Services.AddSingleton<TriggerStateStore>();
-        builder.Services.AddHostedService<TriggerService>();
+        // Register as a singleton AND a hosted service via the same instance — the singleton
+        // registration is what lets endpoint handlers inject TriggerService to fire a manual
+        // /triggers/sources/{id}/run, while the hosted-service shim keeps the background loop.
+        builder.Services.AddSingleton<TriggerService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<TriggerService>());
     }
 }

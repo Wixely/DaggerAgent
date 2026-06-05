@@ -1,15 +1,21 @@
+using System.Reflection;
 using Daggeragent.Configuration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace Daggeragent.Mcp;
 
 public sealed class McpClientHost : IHostedService, IAsyncDisposable
 {
-    private readonly IOptionsMonitor<McpOptions> _options;
+    // Must be IOptions<T>, not IOptionsMonitor<T>: RuntimeConfigStore mutates the
+    // IOptions<McpOptions> singleton in-place on load. IOptionsMonitor maintains a separate
+    // cached instance per name, so reading .CurrentValue here would silently ignore every
+    // server added via runtime config or the UI — exactly the "Known servers: []" warning.
+    private readonly IOptions<McpOptions> _options;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<McpClientHost> _log;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
@@ -18,7 +24,7 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
     private readonly Dictionary<string, IReadOnlyList<AITool>> _tools = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, McpServerConnectionInfo> _connectionStatuses = new(StringComparer.OrdinalIgnoreCase);
 
-    public McpClientHost(IOptionsMonitor<McpOptions> options, ILoggerFactory loggerFactory, ILogger<McpClientHost> log)
+    public McpClientHost(IOptions<McpOptions> options, ILoggerFactory loggerFactory, ILogger<McpClientHost> log)
     {
         _options = options;
         _loggerFactory = loggerFactory;
@@ -114,7 +120,7 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
 
     private async Task InitializeConfiguredServersAsync(CancellationToken cancellationToken)
     {
-        foreach (var server in _options.CurrentValue.Servers)
+        foreach (var server in _options.Value.Servers)
         {
             if (!server.Enabled)
             {
@@ -169,7 +175,7 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
                     label = $"stdio: {server.Command} {string.Join(' ', server.Arguments)}".TrimEnd();
                 }
 
-                client = await McpClient.CreateAsync(transport, new McpClientOptions(), _loggerFactory, cancellationToken).ConfigureAwait(false);
+                client = await McpClient.CreateAsync(transport, BuildClientOptions(), _loggerFactory, cancellationToken).ConfigureAwait(false);
                 var tools = await client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 SetConnectedServer(server.Name, client, tools.Cast<AITool>().ToList(), label, tools.Count);
                 client = null;
@@ -243,6 +249,21 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
             catch (Exception ex) { _log.LogWarning(ex, "Error disposing MCP client"); }
         }
     }
+
+    private static readonly Lazy<McpClientOptions> _clientOptions = new(() => new McpClientOptions
+    {
+        // Surfaced to MCP servers during the init handshake and printed in their logs — without
+        // this the SDK falls back to the running process name (which can be the same binary as a
+        // CLI sub-process spawn, e.g. claude.exe via passthrough config) and makes server-side
+        // log triage harder. Pin DaggerAgent's identity unambiguously.
+        ClientInfo = new Implementation
+        {
+            Name = "DaggerAgent",
+            Version = typeof(McpClientHost).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+        },
+    });
+
+    private static McpClientOptions BuildClientOptions() => _clientOptions.Value;
 
     private static string DescribeTransport(McpServerConfig server)
     {

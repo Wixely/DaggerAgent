@@ -84,6 +84,20 @@ public sealed class ToolsOptions
     public bool AllowCliDelegation { get; set; }
 
     /// <summary>
+    /// Absolute path to the Claude Code CLI executable. Optional — when empty (the default)
+    /// the binary name <c>claude</c> is resolved via the process PATH. Set this when the CLI
+    /// lives in a non-PATH location (e.g. a per-user install under <c>%LOCALAPPDATA%</c>) or
+    /// when you need to pin a specific build.
+    /// </summary>
+    public string ClaudeCliPath { get; set; } = "";
+
+    /// <summary>
+    /// Absolute path to the Codex CLI executable. Optional — when empty (the default) the
+    /// binary name <c>codex</c> is resolved via the process PATH.
+    /// </summary>
+    public string CodexCliPath { get; set; } = "";
+
+    /// <summary>
     /// Any tool result whose string output exceeds this many UTF-16 characters is offloaded:
     /// the full payload is held in <c>ToolResultStore</c>, and the model receives a short
     /// placeholder pointing at <c>read_tool_result</c> / <c>grep_tool_result</c> / etc. instead.

@@ -54,10 +54,24 @@ public sealed class CliDelegationTools
             CancellationToken cancellationToken = default)
         {
             // Pull any prior Claude session for THIS job so a follow-up delegation resumes
-            // instead of cold-starting. Caller can force fresh with freshSession=true.
-            var resumeSession = freshSession ? null : _sessions.Get(jobId, "claude");
+            // instead of cold-starting. Resume key includes cwd because Claude scopes its
+            // session store per project dir; switching dir invalidates the id. Caller can
+            // force fresh with freshSession=true.
+            var cwd = ResolveCwd(workingDirectory);
+            var resumeSession = freshSession ? null : _sessions.Get(jobId, "claude", cwd);
+            if (!freshSession && resumeSession is null)
+            {
+                var staleCwd = _sessions.GetStoredCwd(jobId, "claude");
+                if (staleCwd is not null && !string.Equals(staleCwd, cwd, StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.LogInformation(
+                        "delegate_to_claude job={JobId}: dropping resume session (was cwd={OldCwd}, now cwd={NewCwd}) — starting fresh",
+                        jobId, staleCwd, cwd);
+                    _sessions.Clear(jobId, "claude");
+                }
+            }
             return await RunCliAsync(
-                binary: "claude",
+                binary: ResolveCliBinary(_toolsOptions.ClaudeCliPath, "claude"),
                 buildArgs: cfgPath =>
                 {
                     var list = new List<string> { "-p", task, "--output-format", "json", "--mcp-config", cfgPath };
@@ -71,7 +85,7 @@ public sealed class CliDelegationTools
                 buildConfig: CliMcpConfigBuilder.BuildClaudeConfig,
                 configFileName: "claude-mcp.json",
                 envVarsOverride: null,
-                parseStdout: stdout => ParseClaudeJsonResultAndStashSession(stdout, jobId),
+                parseStdout: stdout => ParseClaudeJsonResultAndStashSession(stdout, jobId, cwd),
                 workingDirectory: workingDirectory,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
@@ -82,10 +96,22 @@ public sealed class CliDelegationTools
             [Description("Start a fresh Codex session even if this job has a prior session id stashed. Default false.")] bool freshSession = false,
             CancellationToken cancellationToken = default)
         {
-            var resumeSession = freshSession ? null : _sessions.Get(jobId, "codex");
+            var cwd = ResolveCwd(workingDirectory);
+            var resumeSession = freshSession ? null : _sessions.Get(jobId, "codex", cwd);
+            if (!freshSession && resumeSession is null)
+            {
+                var staleCwd = _sessions.GetStoredCwd(jobId, "codex");
+                if (staleCwd is not null && !string.Equals(staleCwd, cwd, StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.LogInformation(
+                        "delegate_to_codex job={JobId}: dropping resume session (was cwd={OldCwd}, now cwd={NewCwd}) — starting fresh",
+                        jobId, staleCwd, cwd);
+                    _sessions.Clear(jobId, "codex");
+                }
+            }
             // Codex picks its config from CODEX_HOME/config.toml — point it at our temp dir.
             return await RunCliAsync(
-                binary: "codex",
+                binary: ResolveCliBinary(_toolsOptions.CodexCliPath, "codex"),
                 buildArgs: _ =>
                 {
                     var list = new List<string>();
@@ -107,7 +133,7 @@ public sealed class CliDelegationTools
                 buildConfig: CliMcpConfigBuilder.BuildCodexConfig,
                 configFileName: "config.toml",
                 envVarsOverride: tmpDir => new Dictionary<string, string> { ["CODEX_HOME"] = tmpDir },
-                parseStdout: stdout => ParseCodexResultAndStashSession(stdout, jobId),
+                parseStdout: stdout => ParseCodexResultAndStashSession(stdout, jobId, cwd),
                 workingDirectory: workingDirectory,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
@@ -125,6 +151,38 @@ public sealed class CliDelegationTools
             "with PassthroughToCli=true are made available to Codex; HTTP servers are skipped (Codex CLI " +
             "config doesn't currently support HTTP MCP transport).");
     }
+
+    private static string ResolveCliBinary(string? configured, string fallbackName) =>
+        string.IsNullOrWhiteSpace(configured) ? fallbackName : configured.Trim();
+
+    /// <summary>
+    /// Mirrors the cwd-resolution logic in <see cref="RunCliAsync"/> so the caller can compute
+    /// the same path before invoking — needed to pin Claude/Codex session ids to a cwd, since
+    /// those CLIs scope sessions per project directory.
+    /// </summary>
+    private string ResolveCwd(string? workingDirectoryOverride) =>
+        !string.IsNullOrWhiteSpace(workingDirectoryOverride)
+            ? workingDirectoryOverride!
+            : (!string.IsNullOrWhiteSpace(_toolsOptions.WorkingDirectory)
+                ? _toolsOptions.WorkingDirectory
+                : _launchInfo.OriginalWorkingDirectory);
+
+    private static string FormatArgsForLog(System.Collections.ObjectModel.Collection<string> args)
+    {
+        var sb = new StringBuilder();
+        for (var i = 0; i < args.Count; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            var a = Truncate(args[i], 400);
+            if (a.Contains(' ') || a.Contains('\t') || a.Length == 0)
+                sb.Append('"').Append(a.Replace("\"", "\\\"")).Append('"');
+            else sb.Append(a);
+        }
+        return sb.ToString();
+    }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "…";
 
     private async Task<string> RunCliAsync(
         string binary,
@@ -149,6 +207,7 @@ public sealed class CliDelegationTools
         var tempDir = Path.Combine(Path.GetTempPath(),
             "dagger-cli-" + Guid.NewGuid().ToString("N").Substring(0, 16));
         Directory.CreateDirectory(tempDir);
+        var wallClock = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
@@ -159,6 +218,10 @@ public sealed class CliDelegationTools
             {
                 FileName = binary,
                 WorkingDirectory = cwd,
+                // Redirect stdin so we can close it immediately — Claude Code CLI inspects
+                // stdin and waits ~3s for piped input when it's a non-TTY handle (which an
+                // inherited server stdin is), then exits with code 1. Closing signals EOF.
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -174,13 +237,20 @@ public sealed class CliDelegationTools
             _log.LogInformation(
                 "Delegating to {Binary} (cwd={Cwd}, passthroughServers={Count})",
                 binary, cwd, passthrough.Count);
+            _log.LogDebug(
+                "CLI delegation args: {Args}",
+                FormatArgsForLog(psi.ArgumentList));
 
             Process proc;
             try { proc = Process.Start(psi)!; }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException)
             {
+                _log.LogError(ex, "Failed to start CLI binary {Binary}", binary);
                 return $"Error: failed to start '{binary}' — is it installed and on PATH? ({ex.Message})";
             }
+
+            try { proc.StandardInput.Close(); }
+            catch (Exception ex) { _log.LogDebug(ex, "Closing stdin for {Binary} failed (likely already closed)", binary); }
 
             // If the parent agent is cancelled mid-call, kill the CLI so it doesn't outlive us.
             await using var killReg = cancellationToken.Register(() =>
@@ -203,12 +273,34 @@ public sealed class CliDelegationTools
 
             if (proc.ExitCode != 0)
             {
+                _log.LogError(
+                    "CLI {Binary} exited with code {ExitCode}. stderr={Stderr} stdout={Stdout}",
+                    binary, proc.ExitCode,
+                    Truncate(stderr, 2000),
+                    Truncate(stdout, 2000));
                 var trimmedErr = stderr.Trim();
                 if (trimmedErr.Length > 800) trimmedErr = trimmedErr[..800] + "…";
-                return $"Error: {binary} exited with code {proc.ExitCode}.\n{trimmedErr}";
+                var trimmedOut = stdout.Trim();
+                if (trimmedOut.Length > 400) trimmedOut = trimmedOut[..400] + "…";
+                var detail = trimmedErr.Length > 0
+                    ? trimmedErr
+                    : (trimmedOut.Length > 0 ? $"(no stderr; stdout was: {trimmedOut})" : "(no stderr or stdout)");
+                return $"Error: {binary} exited with code {proc.ExitCode}.\n{detail}";
             }
 
-            return parseStdout(stdout);
+            if (!string.IsNullOrEmpty(stderr))
+                _log.LogDebug("CLI {Binary} stderr (exit 0): {Stderr}", binary, Truncate(stderr, 1000));
+
+            wallClock.Stop();
+            var result = parseStdout(stdout);
+            // For Claude in --output-format json the parser already extracted session_id and
+            // any error meta, but we still want a high-level INFO completion line so the user
+            // can see "did it land" without flipping logging to Debug. Snippet of the result
+            // helps distinguish a real answer from a "(claude returned no output)" placeholder.
+            _log.LogInformation(
+                "CLI delegation done: binary={Binary} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} resultSnippet={Snippet}",
+                binary, wallClock.ElapsedMilliseconds, stdout.Length, result.Length, Truncate(result, 240));
+            return result;
         }
         finally
         {
@@ -217,11 +309,12 @@ public sealed class CliDelegationTools
         }
     }
 
-    private string ParseClaudeJsonResultAndStashSession(string stdout, string jobId)
+    private string ParseClaudeJsonResultAndStashSession(string stdout, string jobId, string cwd)
     {
         // Claude --output-format json returns a single object: {result, session_id, total_cost_usd, usage}.
-        // Pull just .result if present, capture session_id into the per-job store for the next
-        // call's --resume, and hand a trailing meta line back so the model can see/use the id.
+        // Pull just .result if present, capture session_id (tagged with the cwd it was created in
+        // so a later call from a different cwd doesn't try to resume) into the per-job store for
+        // the next call's --resume, and hand a trailing meta line back so the model can see/use the id.
         var trimmed = stdout.Trim();
         if (trimmed.Length == 0) return "(claude returned no output)";
         try
@@ -241,7 +334,7 @@ public sealed class CliDelegationTools
                     sessionId = sid.GetString();
                     if (!string.IsNullOrWhiteSpace(sessionId))
                     {
-                        _sessions.Set(jobId, "claude", sessionId);
+                        _sessions.Set(jobId, "claude", cwd, sessionId);
                         meta.Append("session_id=").Append(sessionId);
                     }
                 }
@@ -249,6 +342,19 @@ public sealed class CliDelegationTools
                 {
                     if (meta.Length > 0) meta.Append("  ");
                     meta.Append("cost_usd=").Append(cost.GetRawText());
+                }
+                // is_error=true on a process-exit-0 JSON means Claude itself rejected the
+                // request (e.g. model 404). Log a warning so the agent / caller sees it as
+                // a real failure rather than a quiet success.
+                if (doc.RootElement.TryGetProperty("is_error", out var isErr)
+                    && (isErr.ValueKind == JsonValueKind.True || isErr.ValueKind == JsonValueKind.False)
+                    && isErr.GetBoolean())
+                {
+                    var apiStatus = doc.RootElement.TryGetProperty("api_error_status", out var s) && s.ValueKind == JsonValueKind.Number
+                        ? s.GetRawText() : "(none)";
+                    _log.LogWarning(
+                        "delegate_to_claude: Claude returned is_error=true (apiStatus={ApiStatus}, sessionId={SessionId})",
+                        apiStatus, sessionId ?? "(none)");
                 }
                 if (doc.RootElement.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String)
                 {
@@ -261,11 +367,13 @@ public sealed class CliDelegationTools
         return trimmed;
     }
 
-    private string ParseCodexResultAndStashSession(string stdout, string jobId)
+    private string ParseCodexResultAndStashSession(string stdout, string jobId, string cwd)
     {
         // Codex `exec` prints the final assistant message to stdout. When the user passes --json
         // (some versions only) the last line is a JSON object with session info. We try to detect
         // a session id either way: look for a final line shaped like `Session: <id>` or a JSON tail.
+        // Stash the id tagged with the cwd it was created in so a later call from a different cwd
+        // doesn't try to resume against a project Codex never associated with this directory.
         var trimmed = stdout.TrimEnd();
         if (trimmed.Length == 0) return "(codex returned no output)";
 
@@ -281,7 +389,7 @@ public sealed class CliDelegationTools
                 {
                     var sessionId = sid.GetString();
                     if (!string.IsNullOrWhiteSpace(sessionId))
-                        _sessions.Set(jobId, "codex", sessionId);
+                        _sessions.Set(jobId, "codex", cwd, sessionId);
                 }
             }
             catch (JsonException) { /* ignore */ }
@@ -298,7 +406,7 @@ public sealed class CliDelegationTools
             {
                 var sessionId = parts[1].Trim();
                 if (!string.IsNullOrWhiteSpace(sessionId))
-                    _sessions.Set(jobId, "codex", sessionId);
+                    _sessions.Set(jobId, "codex", cwd, sessionId);
             }
         }
 

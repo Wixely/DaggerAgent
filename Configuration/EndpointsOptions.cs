@@ -51,4 +51,44 @@ public sealed class EndpointConfig
 
     /// <summary>When false, the endpoint is kept in the config but hidden from the UI dropdown.</summary>
     public bool Enabled { get; set; } = true;
+
+    // ── ClaudeCli-specific knobs (ignored for other providers) ────────────────────────────────
+
+    /// <summary>
+    /// Maps to Claude CLI's <c>--permission-mode</c> flag. Common values: <c>default</c>,
+    /// <c>acceptEdits</c>, <c>plan</c>, <c>bypassPermissions</c>. Empty = no flag (Claude's
+    /// own default applies). Set to <c>bypassPermissions</c> for an unattended trigger
+    /// endpoint so git / shell prompts don't stall the run waiting for a human click.
+    /// </summary>
+    public string ClaudePermissionMode { get; set; } = "";
+
+    /// <summary>
+    /// Maps to Claude CLI's <c>--allowedTools</c> flag. Each entry is a tool pattern, e.g.
+    /// <c>Bash(git:*)</c>, <c>Edit</c>, <c>Read</c>. Combined into a space-separated value
+    /// when emitted. Empty list = no flag. Use this for a surgical alternative to
+    /// <c>bypassPermissions</c> — only the listed patterns auto-approve.
+    /// </summary>
+    public List<string> ClaudeAllowedTools { get; set; } = new();
+
+    /// <summary>
+    /// Maps to Claude CLI's <c>--dangerously-skip-permissions</c> flag. Stronger than
+    /// <see cref="ClaudePermissionMode"/>=bypassPermissions: turns off the permission system
+    /// entirely. Reserve for fully-trusted internal endpoints; default false.
+    /// </summary>
+    public bool ClaudeDangerouslySkipPermissions { get; set; }
+
+    // ── CodexCli-specific knobs (ignored for other providers) ─────────────────────────────────
+
+    /// <summary>
+    /// Maps to Codex CLI's <c>--sandbox</c> flag. Values: <c>read-only</c>,
+    /// <c>workspace-write</c>, <c>danger-full-access</c>. Empty = Codex's own default.
+    /// </summary>
+    public string CodexSandbox { get; set; } = "";
+
+    /// <summary>
+    /// Maps to Codex CLI's <c>--ask-for-approval</c> flag. Values: <c>untrusted</c>,
+    /// <c>on-failure</c>, <c>on-request</c>, <c>never</c>. Empty = Codex's own default.
+    /// Use <c>never</c> for unattended runs.
+    /// </summary>
+    public string CodexAskForApproval { get; set; } = "";
 }

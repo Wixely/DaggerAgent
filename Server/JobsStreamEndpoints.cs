@@ -35,11 +35,12 @@ public static class JobsStreamEndpoints
             LlmAgent agent,
             IJobStore store,
             IOptions<OpenAIOptions> openAi,
+            IOptions<EndpointsOptions> endpoints,
             IOptions<ToolsOptions> toolsOpts,
             CancellationToken ct) =>
         {
             await store.InitializeAsync(ct).ConfigureAwait(false);
-            var model = string.IsNullOrWhiteSpace(req.Model) ? openAi.Value.DefaultModel : req.Model!;
+            var model = ResolveModel(req.Model, req.EndpointId, endpoints.Value, openAi.Value);
             var state = agent.CreateState(model, req.System);
             if (!string.IsNullOrWhiteSpace(req.EndpointId)) state.EndpointId = req.EndpointId;
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
@@ -84,6 +85,36 @@ public static class JobsStreamEndpoints
     }
 
     private static IResult EmptyResult() => Results.Empty;
+
+    /// <summary>
+    /// Pick the model for a newly-created job. Priority: explicit request override → the
+    /// model declared on the requested endpoint → the model on the global default endpoint
+    /// → legacy <c>OpenAIOptions.DefaultModel</c>. Without this, a request that pins an
+    /// endpoint but omits the model would silently use the legacy default (typically the
+    /// local LM Studio model id), which is the wrong model for any non-OpenAI endpoint.
+    /// </summary>
+    internal static string ResolveModel(string? requested, string? endpointId, EndpointsOptions endpoints, OpenAIOptions legacy)
+    {
+        if (!string.IsNullOrWhiteSpace(requested)) return requested!;
+
+        if (!string.IsNullOrWhiteSpace(endpointId))
+        {
+            var match = endpoints.Items.FirstOrDefault(e =>
+                string.Equals(e.Id, endpointId, StringComparison.OrdinalIgnoreCase));
+            if (match is not null && !string.IsNullOrWhiteSpace(match.DefaultModel))
+                return match.DefaultModel;
+        }
+
+        if (!string.IsNullOrWhiteSpace(endpoints.DefaultId))
+        {
+            var def = endpoints.Items.FirstOrDefault(e =>
+                string.Equals(e.Id, endpoints.DefaultId, StringComparison.OrdinalIgnoreCase));
+            if (def is not null && !string.IsNullOrWhiteSpace(def.DefaultModel))
+                return def.DefaultModel;
+        }
+
+        return legacy.DefaultModel;
+    }
 
     private static async Task StreamTurnAsync(
         HttpContext http,

@@ -29,6 +29,7 @@ public sealed class RuntimeConfigStore
     private readonly EndpointsOptions _endpoints;
     private readonly McpOptions _mcp;
     private readonly TriggerOptions _triggers;
+    private readonly ToolsOptions _tools;
     private readonly HostLaunchInfo _launchInfo;
     private readonly ILogger<RuntimeConfigStore> _log;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
@@ -37,12 +38,14 @@ public sealed class RuntimeConfigStore
         IOptions<EndpointsOptions> endpoints,
         IOptions<McpOptions> mcp,
         IOptions<TriggerOptions> triggers,
+        IOptions<ToolsOptions> tools,
         HostLaunchInfo launchInfo,
         ILogger<RuntimeConfigStore> log)
     {
         _endpoints = endpoints.Value;
         _mcp = mcp.Value;
         _triggers = triggers.Value;
+        _tools = tools.Value;
         _launchInfo = launchInfo;
         _log = log;
     }
@@ -96,9 +99,18 @@ public sealed class RuntimeConfigStore
                 foreach (var s in snapshot.Triggers.Sources) _triggers.Sources.Add(s);
             }
 
+            // Last working directory — only this slice of ToolsOptions is persisted (other
+            // toggles are intentionally session-scoped). Lets the user pick a project dir in
+            // the UI once and have it stick across restarts for this agent installation.
+            // The file lives under {ContentRoot}/data, so a separate copy of DaggerAgent in a
+            // different folder has its own runtime-config.json and won't clobber this one.
+            if (!string.IsNullOrWhiteSpace(snapshot.LastWorkingDirectory))
+                _tools.WorkingDirectory = snapshot.LastWorkingDirectory;
+
             _log.LogInformation(
-                "Loaded runtime config from {Path}: {EndpointCount} endpoint(s), {McpCount} mcp server(s), {TriggerCount} trigger source(s)",
-                FilePath, _endpoints.Items.Count, _mcp.Servers.Count, _triggers.Sources.Count);
+                "Loaded runtime config from {Path}: {EndpointCount} endpoint(s), {McpCount} mcp server(s), {TriggerCount} trigger source(s), cwd={Cwd}",
+                FilePath, _endpoints.Items.Count, _mcp.Servers.Count, _triggers.Sources.Count,
+                string.IsNullOrWhiteSpace(_tools.WorkingDirectory) ? "(none)" : _tools.WorkingDirectory);
         }
         finally { _ioLock.Release(); }
     }
@@ -129,6 +141,7 @@ public sealed class RuntimeConfigStore
                     AllowedAuthors = _triggers.AllowedAuthors.ToList(),
                     Sources = _triggers.Sources.ToList(),
                 },
+                LastWorkingDirectory = string.IsNullOrWhiteSpace(_tools.WorkingDirectory) ? null : _tools.WorkingDirectory,
             };
 
             // Atomic-ish: write to .tmp then rename. Stops a crash mid-write from corrupting
@@ -145,5 +158,11 @@ public sealed class RuntimeConfigStore
         public EndpointsOptions? Endpoints { get; set; }
         public McpOptions? Mcp { get; set; }
         public TriggerOptions? Triggers { get; set; }
+        /// <summary>
+        /// Sticky working directory. Persisted so the UI's cwd field re-populates with the
+        /// last value the user picked, instead of falling back to wherever the process was
+        /// launched from. Per-installation (the file lives under {ContentRoot}/data).
+        /// </summary>
+        public string? LastWorkingDirectory { get; set; }
     }
 }

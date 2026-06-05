@@ -53,4 +53,26 @@ public sealed class ConversationState
     /// started against even if the global default changes mid-session.
     /// </summary>
     public string? EndpointId { get; set; }
+
+    /// <summary>
+    /// True when the job's last <c>Running</c> turn never reached the end-of-turn save —
+    /// e.g. the process was killed mid-turn. Set by the startup orphan sweep when it flips
+    /// orphaned <c>Running</c> rows back to <c>Paused</c>; cleared on the next successful turn.
+    /// Used by the UI to surface a "Resume" affordance and by the trigger auto-resume sweep.
+    /// </summary>
+    public bool Interrupted { get; set; }
+
+    /// <summary>
+    /// Id of the <see cref="Configuration.TriggerSource"/> that spawned this job, or null
+    /// for user-initiated jobs. Lets the startup auto-resume sweep know which orphans to
+    /// re-launch automatically (and which to leave for a human click).
+    /// </summary>
+    public string? TriggerSourceId { get; set; }
+
+    /// <summary>
+    /// Count of times this job has been auto-resumed after an interruption. Capped by
+    /// <see cref="Configuration.TriggerOptions.MaxAutoResumeAttempts"/> so a job that keeps
+    /// crashing mid-turn stops eating retries.
+    /// </summary>
+    public int AutoResumeAttempts { get; set; }
 }

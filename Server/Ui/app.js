@@ -142,6 +142,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   statusPill: $("status-pill"),
   jobIdLabel: $("job-id-label"),
+  btnRefreshJob: $("btn-refresh-job"),
   btnTheme: $("btn-theme"),
   btnRightToggle: $("btn-right-toggle"),
   btnNewJob: $("btn-new-job"),
@@ -532,9 +533,20 @@ function renderEndpointCard(e, isActive) {
 function renderEndpointForm(e, isNew = false) {
   const form = el("form", { class: "endpoint-form" });
   const field = (label, attrs) => {
+    const a = attrs || {};
+    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
+    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
+    // and put the label after the control (which is the switch idiom).
+    if (a.type === "checkbox") {
+      const wrap = el("div", { class: "form-check form-switch" });
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      wrap.appendChild(inp);
+      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      return { wrap, inp };
+    }
     const wrap = el("div", {});
     wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, attrs || {}));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -559,12 +571,42 @@ function renderEndpointForm(e, isNew = false) {
   const enF = field("Enabled", { type: "checkbox" });
   enF.inp.checked = e.enabled !== false;
 
+  // CLI-flavour fields. Stored on the endpoint regardless of provider so a tab-flip in the
+  // form doesn't lose them, but visually shown / hidden based on current Provider selection
+  // so non-CLI endpoints don't surface irrelevant knobs.
+  const claudePermModeF = sel("Claude permission mode", ["", "default", "acceptEdits", "plan", "bypassPermissions"], e.claudePermissionMode || "");
+  const claudeAllowedToolsF = field("Claude allowed tools (comma- or space-separated, e.g. Bash(git:*) Edit Read)", { value: (e.claudeAllowedTools || []).join(" ") });
+  const claudeSkipF = field("Claude --dangerously-skip-permissions", { type: "checkbox" });
+  claudeSkipF.inp.checked = !!e.claudeDangerouslySkipPermissions;
+  const codexSandboxF = sel("Codex sandbox", ["", "read-only", "workspace-write", "danger-full-access"], e.codexSandbox || "");
+  const codexApprovalF = sel("Codex ask-for-approval", ["", "untrusted", "on-failure", "on-request", "never"], e.codexAskForApproval || "");
+
+  const claudeBlock = el("div", { class: "endpoint-cli-block" },
+    el("div", { class: "endpoint-cli-heading text-muted small" }, "Claude CLI permission flags"),
+    claudePermModeF.wrap,
+    claudeAllowedToolsF.wrap,
+    claudeSkipF.wrap);
+  const codexBlock = el("div", { class: "endpoint-cli-block" },
+    el("div", { class: "endpoint-cli-heading text-muted small" }, "Codex CLI permission flags"),
+    codexSandboxF.wrap,
+    codexApprovalF.wrap);
+
+  const syncProviderVisibility = () => {
+    const p = (provF.inp.value || "").toLowerCase();
+    claudeBlock.style.display = p === "claudecli" ? "" : "none";
+    codexBlock.style.display = p === "codexcli" ? "" : "none";
+  };
+  provF.inp.addEventListener("change", syncProviderVisibility);
+
   form.appendChild(el("div", { class: "row-2" }, idF.wrap, provF.wrap));
   form.appendChild(nameF.wrap);
   form.appendChild(urlF.wrap);
   form.appendChild(keyF.wrap);
   form.appendChild(el("div", { class: "row-2" }, modelF.wrap, toF.wrap));
   form.appendChild(enF.wrap);
+  form.appendChild(claudeBlock);
+  form.appendChild(codexBlock);
+  syncProviderVisibility();
 
   const saveBtn = el("button", { type: "submit", class: "btn btn-sm btn-primary" }, isNew ? "Create" : "Save");
   const cancelBtn = el("button", { type: "button", class: "btn btn-sm btn-outline-secondary" }, "Cancel");
@@ -575,6 +617,10 @@ function renderEndpointForm(e, isNew = false) {
   });
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    const allowedToolsRaw = claudeAllowedToolsF.inp.value.trim();
+    const allowedTools = allowedToolsRaw
+      ? allowedToolsRaw.split(/[\s,]+/).filter(Boolean)
+      : [];
     const body = {
       id: idF.inp.value.trim(),
       displayName: nameF.inp.value,
@@ -583,6 +629,11 @@ function renderEndpointForm(e, isNew = false) {
       defaultModel: modelF.inp.value,
       requestTimeoutSeconds: Number(toF.inp.value) || 600,
       enabled: enF.inp.checked,
+      claudePermissionMode: claudePermModeF.inp.value,
+      claudeAllowedTools: allowedTools,
+      claudeDangerouslySkipPermissions: claudeSkipF.inp.checked,
+      codexSandbox: codexSandboxF.inp.value,
+      codexAskForApproval: codexApprovalF.inp.value,
     };
     if (keyF.inp.value !== "") body.apiKey = keyF.inp.value;
     try {
@@ -706,9 +757,20 @@ function renderMcpCard(cfg, status) {
 function renderMcpForm(cfg, isNew = false) {
   const form = el("form", { class: "mcp-form endpoint-form" });
   const field = (label, attrs) => {
+    const a = attrs || {};
+    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
+    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
+    // and put the label after the control (which is the switch idiom).
+    if (a.type === "checkbox") {
+      const wrap = el("div", { class: "form-check form-switch" });
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      wrap.appendChild(inp);
+      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      return { wrap, inp };
+    }
     const wrap = el("div", {});
     wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, attrs || {}));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -818,9 +880,20 @@ function renderTriggerOptions() {
   const t = state.triggers || {};
 
   const field = (label, attrs) => {
+    const a = attrs || {};
+    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
+    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
+    // and put the label after the control (which is the switch idiom).
+    if (a.type === "checkbox") {
+      const wrap = el("div", { class: "form-check form-switch" });
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      wrap.appendChild(inp);
+      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      return { wrap, inp };
+    }
     const wrap = el("div", {});
     wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, attrs || {}));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -896,13 +969,22 @@ function renderTriggerCard(s) {
   card.appendChild(el("div", { class: "endpoint-meta" }, meta.join(" · ") || "(no details)"));
 
   const actions = el("div", { class: "endpoint-actions" });
+  const runBtn = el("button", { class: "btn btn-sm btn-outline-primary" }, "Run now");
   const editBtn = el("button", { class: "btn btn-sm btn-outline-secondary" }, "Edit");
+  actions.appendChild(runBtn);
   actions.appendChild(editBtn);
   actions.appendChild(el("button", {
     class: "btn btn-sm btn-outline-danger",
     onclick: () => deleteTriggerSource(s.id),
   }, "Delete"));
   card.appendChild(actions);
+
+  // Inline status line for "Run now" outcomes — lives under the actions row so it doesn't
+  // disrupt the card layout, and gets replaced on each subsequent run.
+  const runStatus = el("div", { class: "endpoint-meta", style: "margin-top: 4px;" });
+  card.appendChild(runStatus);
+
+  runBtn.addEventListener("click", () => runTriggerSourceNow(s.id, runBtn, runStatus));
 
   const form = renderTriggerSourceForm(s);
   form.style.display = "none";
@@ -913,12 +995,50 @@ function renderTriggerCard(s) {
   return card;
 }
 
+async function runTriggerSourceNow(id, btn, statusEl) {
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Running…";
+  statusEl.textContent = "";
+  statusEl.classList.remove("text-danger", "text-success");
+  try {
+    const r = await api(`/triggers/sources/${encodeURIComponent(id)}/run`, { method: "POST" });
+    if (r.ok) {
+      statusEl.textContent = r.spawned > 0
+        ? `Spawned ${r.spawned} job${r.spawned === 1 ? "" : "s"}.`
+        : "No new matches.";
+      statusEl.classList.add("text-success");
+      refreshJobs();
+    } else {
+      statusEl.textContent = `Failed: ${r.error || "unknown error"}`;
+      statusEl.classList.add("text-danger");
+    }
+  } catch (e) {
+    statusEl.textContent = `Failed: ${e.message}`;
+    statusEl.classList.add("text-danger");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 function renderTriggerSourceForm(s, isNew = false) {
   const form = el("form", { class: "endpoint-form" });
   const field = (label, attrs) => {
+    const a = attrs || {};
+    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
+    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
+    // and put the label after the control (which is the switch idiom).
+    if (a.type === "checkbox") {
+      const wrap = el("div", { class: "form-check form-switch" });
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      wrap.appendChild(inp);
+      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      return { wrap, inp };
+    }
     const wrap = el("div", {});
     wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, attrs || {}));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -1146,6 +1266,10 @@ function renderSettingsForm() {
     "Tool results larger than this get stashed; the agent reads slices via read_tool_result. 0 disables."));
   f.appendChild(boolField("set-cli", "Allow CLI delegation", "allowCliDelegation",
     "Expose delegate_to_claude / delegate_to_codex tools — agent can shell out to external CLI agents."));
+  f.appendChild(textField("set-claude-path", "Claude CLI path", "claudeCliPath",
+    "Absolute path to the claude executable. Leave blank to resolve via PATH."));
+  f.appendChild(textField("set-codex-path", "Codex CLI path", "codexCliPath",
+    "Absolute path to the codex executable. Leave blank to resolve via PATH."));
 }
 
 async function loadPlan() {
@@ -1441,6 +1565,11 @@ async function onSendClick(forceQueue) {
   renderImageStrip();
   autoGrowPrompt();
 
+  // Slash commands are handled locally — they used to be sent verbatim to the LLM, so
+  // typing /mcpreload at a claude-cli endpoint would spawn claude.exe and forward the
+  // string (causing the MCP server to log "claude connecting" instead of doing the reload).
+  if (prompt.startsWith("/") && await tryHandleSlashCommand(prompt)) return;
+
   // Queueing is implicit: any submit while a turn is streaming joins the queue (matches CLI).
   // Ctrl+Enter from idle still enqueues without starting, useful for batching up several prompts before launching.
   if (forceQueue || state.streaming) {
@@ -1449,6 +1578,51 @@ async function onSendClick(forceQueue) {
     return;
   }
   await runTurn(prompt, images);
+}
+
+async function tryHandleSlashCommand(raw) {
+  const [cmd, ...rest] = raw.split(/\s+/);
+  const arg = rest.join(" ").trim();
+  const echo = (text) => {
+    appendUserMessage(raw, []);
+    const msg = el("div", { class: "msg assistant" }, el("em", {}, text));
+    withScrollStick(() => els.transcript.appendChild(msg));
+  };
+  switch (cmd.toLowerCase()) {
+    case "/new":
+      newJob();
+      return true;
+    case "/jobs":
+      refreshJobs();
+      echo("Refreshed jobs list — see the left sidebar.");
+      return true;
+    case "/help":
+      try {
+        const list = await api("/commands");
+        const lines = list.map(c => `${c.command} — ${c.description}`).join("\n");
+        echo(lines || "(no commands registered)");
+      } catch (e) { echo(`Failed to load commands: ${e.message}`); }
+      return true;
+    case "/mcpreload":
+      try {
+        await api("/mcp/reload", { method: "POST" });
+        await loadMcpConfig();
+        loadTools();
+        echo("MCP servers reloaded.");
+      } catch (e) { echo(`MCP reload failed: ${e.message}`); }
+      return true;
+    case "/resume":
+      if (!arg) { echo("Usage: /resume <jobId>"); return true; }
+      await selectJob(arg);
+      return true;
+    case "/compress":
+      // No server endpoint for compression yet — surface that rather than silently sending
+      // the literal "/compress" string to the LLM.
+      echo("Compression is not wired to a server endpoint yet — start a fresh job with /new instead.");
+      return true;
+    default:
+      return false; // unknown slash command falls through to be sent to the LLM
+  }
 }
 
 function onCancelClick() {
@@ -1478,20 +1652,50 @@ function renderJobsList() {
   const filter = state.jobFilter.toLowerCase();
   for (const j of state.jobs) {
     if (filter && !j.jobId.toLowerCase().includes(filter) && !(j.model || "").toLowerCase().includes(filter)) continue;
+    const statusBits = [j.status, new Date(j.updatedAt).toLocaleString()];
+    if (j.interrupted) statusBits.unshift("interrupted");
+    if (j.triggerSourceId) statusBits.push(`src: ${j.triggerSourceId}`);
     const li = el("li", {
-      class: "job-item" + (j.jobId === state.currentJobId ? " active" : ""),
+      class: "job-item"
+        + (j.jobId === state.currentJobId ? " active" : "")
+        + (j.interrupted ? " interrupted" : ""),
       onclick: () => selectJob(j.jobId),
     },
       el("span", {}, j.model || "?"),
       el("span", { class: "job-id" }, j.jobId.slice(0, 12)),
-      el("span", { class: "job-status text-muted" }, `${j.status} · ${new Date(j.updatedAt).toLocaleString()}`));
+      el("span", { class: "job-status text-muted" }, statusBits.join(" · ")));
+
+    // Resume button — surfaced for any interrupted job, regardless of whether a human or
+    // the trigger sweep created it. Click stops propagation so it doesn't also fire selectJob.
+    if (j.interrupted) {
+      const resumeBtn = el("button", {
+        class: "btn btn-sm btn-outline-warning",
+        style: "margin-left: 4px; padding: 0 6px; font-size: 0.7rem;",
+        title: "Resume this interrupted job",
+        onclick: (ev) => { ev.stopPropagation(); resumeJob(j.jobId); },
+      }, "Resume");
+      li.appendChild(resumeBtn);
+    }
     c.appendChild(li);
   }
+}
+
+async function resumeJob(jobId) {
+  await selectJob(jobId);
+  // Use the same streaming pipeline a normal message takes — the recovery prompt is server-side
+  // canonical text that nudges the model to pick up from in-progress steps.
+  const recoveryPrompt =
+    "The previous turn was cut short because the DaggerAgent service stopped mid-execution. " +
+    "Pick up from where you left off based on the conversation above — re-check any plan steps " +
+    "that were in_progress and resume the task. Don't repeat tool calls you already completed.";
+  await runTurn(recoveryPrompt, []);
+  refreshJobs();
 }
 
 async function selectJob(jobId) {
   state.currentJobId = jobId;
   els.jobIdLabel.textContent = jobId;
+  if (els.btnRefreshJob) els.btnRefreshJob.style.display = "";
   flashStatus("idle");
   try {
     const view = await api(`/jobs/${encodeURIComponent(jobId)}`);
@@ -1509,9 +1713,19 @@ async function selectJob(jobId) {
   if (els.panes.plan.classList.contains("active")) loadPlan();
 }
 
+async function refreshCurrentJob() {
+  // Manual reload from disk — pairs with the background trigger / auto-resume turns whose
+  // updates don't stream over the open SSE channel. Re-uses selectJob so endpoint/cwd
+  // restore behaviour stays consistent.
+  if (!state.currentJobId) return;
+  await selectJob(state.currentJobId);
+  refreshJobs();
+}
+
 function newJob() {
   state.currentJobId = null;
   els.jobIdLabel.textContent = "";
+  if (els.btnRefreshJob) els.btnRefreshJob.style.display = "none";
   flashStatus("idle");
   clearTranscript();
   renderJobsList();
@@ -1690,6 +1904,14 @@ function wireEvents() {
   els.btnMcpAdd?.addEventListener("click", () => addMcpForm());
   els.btnEndpointAdd?.addEventListener("click", () => addEndpointForm());
   els.btnTriggerAdd?.addEventListener("click", () => addTriggerSourceForm());
+
+  if (els.btnRefreshJob) {
+    els.btnRefreshJob.addEventListener("click", async () => {
+      els.btnRefreshJob.disabled = true;
+      try { await refreshCurrentJob(); }
+      finally { els.btnRefreshJob.disabled = false; }
+    });
+  }
 
   // api key dialog
   apiKeyDialog.querySelector("form").addEventListener("submit", () => {});

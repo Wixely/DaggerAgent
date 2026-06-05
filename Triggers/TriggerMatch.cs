@@ -20,6 +20,14 @@ public sealed class TriggerMatch
     // GitHub
     [JsonPropertyName("repo")]       public string? Repo { get; set; }
     [JsonPropertyName("number")]     public int? Number { get; set; }
+
+    /// <summary>
+    /// Provider-specific id of the comment / note / discussion that contained the mention.
+    /// Shared between GitHub (issue comment id) and AzureDevOps (work-item comment id);
+    /// disambiguated by which natural-id field is set (<see cref="Number"/> vs <see cref="Id"/>).
+    /// When the MCP server populates this, dedup is scoped to the specific mention so an
+    /// unrelated edit on the same item won't re-fire — see <see cref="MatchKey"/>.
+    /// </summary>
     [JsonPropertyName("commentId")]  public long? CommentId { get; set; }
 
     // GitLab
@@ -33,19 +41,24 @@ public sealed class TriggerMatch
     [JsonPropertyName("title")]         public string? Title { get; set; }
 
     /// <summary>
-    /// Stable per-source key for dedup. Combines the kind + the natural id + the
-    /// updatedAt timestamp so an edited-then-re-mentioned comment is treated as new.
+    /// Stable per-source key for dedup. Pattern: <c>{providerPrefix}-{naturalId}[-{commentId}]@{UpdatedAt:O}</c>.
+    /// Provider is identified by which natural-id field is populated — Number (GitHub),
+    /// Iid (GitLab), Id (AzureDevOps). When a comment id is present the key includes it,
+    /// scoping dedup to the specific mention; otherwise the key is item-level so any
+    /// timestamp bump on the parent item re-fires (intentional for edited-then-re-mentioned
+    /// tickets, harmless for first-time matches).
     /// </summary>
     public string MatchKey()
     {
-        // Prefer provider-specific natural ids when present.
-        var natural =
-            CommentId is not null ? $"gh-comment-{Number}-{CommentId}"
-            : NoteId is not null ? $"gl-note-{Iid}-{NoteId}"
-            : Number is not null ? $"gh-{Kind}-{Number}"
-            : Iid is not null ? $"gl-{Kind}-{Iid}"
-            : Id is not null ? $"az-{Kind}-{Id}"
-            : Url;
+        string natural;
+        if (Number is not null)
+            natural = CommentId is not null ? $"gh-comment-{Number}-{CommentId}" : $"gh-{Kind}-{Number}";
+        else if (Iid is not null)
+            natural = NoteId is not null ? $"gl-note-{Iid}-{NoteId}" : $"gl-{Kind}-{Iid}";
+        else if (Id is not null)
+            natural = CommentId is not null ? $"az-comment-{Id}-{CommentId}" : $"az-{Kind}-{Id}";
+        else
+            natural = Url;
         return $"{natural}@{UpdatedAt:O}";
     }
 

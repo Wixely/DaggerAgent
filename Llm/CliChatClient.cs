@@ -33,6 +33,7 @@ public sealed class CliChatClient : IChatClient
     private readonly string _cwd;
     private readonly McpOptions _mcp;
     private readonly CliSessionStore _sessions;
+    private readonly PermissionFlags _permission;
     private readonly ILogger _log;
 
     public CliChatClient(
@@ -43,18 +44,38 @@ public sealed class CliChatClient : IChatClient
         string cwd,
         McpOptions mcp,
         CliSessionStore sessions,
-        ILogger logger)
+        ILogger logger,
+        string? binaryPathOverride = null,
+        PermissionFlags? permission = null)
     {
         _kind = kind;
-        _binary = kind == CliKind.Claude ? "claude" : "codex";
-        _sessionKey = kind == CliKind.Claude ? "claude" : "codex";
+        var defaultBinary = kind == CliKind.Claude ? "claude" : "codex";
+        _binary = string.IsNullOrWhiteSpace(binaryPathOverride) ? defaultBinary : binaryPathOverride.Trim();
+        _sessionKey = defaultBinary;
         _model = model;
         _jobId = jobId;
         _timeout = timeout;
         _cwd = cwd;
         _mcp = mcp;
         _sessions = sessions;
+        _permission = permission ?? PermissionFlags.None;
         _log = logger;
+    }
+
+    /// <summary>
+    /// Per-endpoint permission configuration. Maps to <c>--permission-mode</c> / <c>--allowedTools</c>
+    /// / <c>--dangerously-skip-permissions</c> for Claude and <c>--sandbox</c> / <c>--ask-for-approval</c>
+    /// for Codex. Empty / default values mean "don't emit the flag at all" — the CLI's own default
+    /// applies in that case.
+    /// </summary>
+    public sealed record PermissionFlags(
+        string ClaudePermissionMode = "",
+        IReadOnlyList<string>? ClaudeAllowedTools = null,
+        bool ClaudeDangerouslySkipPermissions = false,
+        string CodexSandbox = "",
+        string CodexAskForApproval = "")
+    {
+        public static readonly PermissionFlags None = new();
     }
 
     public void Dispose() { }
@@ -67,7 +88,8 @@ public sealed class CliChatClient : IChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var prompt = ExtractLatestUserPrompt(messages);
+        var msgList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        var prompt = BuildPrompt(msgList);
         if (string.IsNullOrWhiteSpace(prompt))
             return new ChatResponse(new ChatMessage(ChatRole.Assistant, "(no user prompt to forward to CLI)"))
             {
@@ -80,6 +102,87 @@ public sealed class CliChatClient : IChatClient
             ModelId = options?.ModelId ?? _model,
             FinishReason = ChatFinishReason.Stop,
         };
+    }
+
+    /// <summary>
+    /// Pick the prompt shape based on whether a CLI session is available to resume against.
+    /// With a session: only the latest user message goes over the wire — Claude's own session
+    /// store rehydrates the prior context via <c>--resume</c>. Without a session: the prior
+    /// conversation is folded inline so context isn't lost (e.g. when the cwd changed mid-job
+    /// invalidated the session, or turn 1 errored before stashing one).
+    /// </summary>
+    private string BuildPrompt(IReadOnlyList<ChatMessage> messages)
+    {
+        var latestUser = FindLatestUser(messages);
+        var latest = latestUser is null ? "" : ExtractText(latestUser);
+        if (string.IsNullOrWhiteSpace(latest)) return latest;
+
+        if (_jobId is not null && _sessions.Get(_jobId, _sessionKey, _cwd) is not null)
+            return latest;
+
+        // No usable session — see if there's prior conversation to fold in. A brand-new job
+        // only has [system, user(first prompt)] so prior is empty and we send just the latest
+        // (current behaviour). A continuation has assistant turns in between — include those.
+        var transcript = BuildTranscript(messages, exclude: latestUser);
+        if (string.IsNullOrEmpty(transcript)) return latest;
+
+        _log.LogInformation(
+            "CLI {Binary} job {JobId}: no resumable session — including {PriorChars} chars of prior conversation in the prompt",
+            _binary, _jobId ?? "(none)", transcript.Length);
+
+        return
+            "[DaggerAgent: this conversation is being resumed without an active CLI session. " +
+            "The prior turns are included below as context — treat them as established history " +
+            "and continue from where they left off, then answer the latest user message.]\n\n" +
+            "--- Prior conversation ---\n" +
+            transcript +
+            "\n--- Latest user message ---\n" +
+            latest;
+    }
+
+    private static ChatMessage? FindLatestUser(IReadOnlyList<ChatMessage> messages)
+    {
+        ChatMessage? last = null;
+        foreach (var m in messages)
+        {
+            if (m.Role == ChatRole.User) last = m;
+        }
+        return last;
+    }
+
+    private static string BuildTranscript(IReadOnlyList<ChatMessage> messages, ChatMessage? exclude)
+    {
+        var sb = new StringBuilder();
+        foreach (var m in messages)
+        {
+            if (ReferenceEquals(m, exclude)) continue;
+            // System (persona / preamble) is intentionally skipped — Claude's own system prompt
+            // would clash with ours. Only User and Assistant turns are folded in as context.
+            if (m.Role != ChatRole.User && m.Role != ChatRole.Assistant) continue;
+            var text = ExtractText(m);
+            if (string.IsNullOrEmpty(text)) continue;
+            var label = m.Role == ChatRole.User ? "User" : "Assistant";
+            if (sb.Length > 0) sb.AppendLine();
+            sb.Append('[').Append(label).Append("]:\n").AppendLine(text);
+        }
+        return sb.ToString();
+    }
+
+    private static string ExtractText(ChatMessage msg)
+    {
+        // Concatenate any text content parts; ignore images/tool results — the CLI's -p mode
+        // takes plain text input only. Multimodal turns will lose attachments.
+        if (!string.IsNullOrEmpty(msg.Text)) return msg.Text;
+        var sb = new StringBuilder();
+        foreach (var c in msg.Contents)
+        {
+            if (c is TextContent tc && !string.IsNullOrEmpty(tc.Text))
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(tc.Text);
+            }
+        }
+        return sb.ToString();
     }
 
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -102,37 +205,32 @@ public sealed class CliChatClient : IChatClient
         }
     }
 
-    private static string ExtractLatestUserPrompt(IEnumerable<ChatMessage> messages)
-    {
-        ChatMessage? last = null;
-        foreach (var m in messages)
-        {
-            if (m.Role == ChatRole.User) last = m;
-        }
-        if (last is null) return "";
-        // Concatenate any text content parts; ignore images/tool results — the CLI's -p mode
-        // takes plain text input only. Multimodal turns will lose attachments.
-        if (!string.IsNullOrEmpty(last.Text)) return last.Text;
-        var sb = new StringBuilder();
-        foreach (var c in last.Contents)
-        {
-            if (c is TextContent tc && !string.IsNullOrEmpty(tc.Text))
-            {
-                if (sb.Length > 0) sb.Append('\n');
-                sb.Append(tc.Text);
-            }
-        }
-        return sb.ToString();
-    }
-
     private async Task<string> RunAsync(string prompt, CancellationToken ct)
     {
         var passthrough = _mcp.Servers.Where(s => s.Enabled && s.PassthroughToCli).ToList();
-        var resumeSession = _jobId is null ? null : _sessions.Get(_jobId, _sessionKey);
+        string? resumeSession = null;
+        if (_jobId is not null)
+        {
+            // Cwd is part of the resume key because Claude stores sessions per project dir —
+            // handing it an id from a different cwd makes it bail with "No conversation found".
+            resumeSession = _sessions.Get(_jobId, _sessionKey, _cwd);
+            if (resumeSession is null)
+            {
+                var staleCwd = _sessions.GetStoredCwd(_jobId, _sessionKey);
+                if (staleCwd is not null && !string.Equals(staleCwd, _cwd, StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.LogInformation(
+                        "CLI {Binary} job {JobId}: dropping resume session (was for cwd={OldCwd}, now cwd={NewCwd}) — starting fresh session",
+                        _binary, _jobId, staleCwd, _cwd);
+                    _sessions.Clear(_jobId, _sessionKey);
+                }
+            }
+        }
 
         var tempDir = Path.Combine(Path.GetTempPath(),
             "dagger-cli-" + Guid.NewGuid().ToString("N")[..16]);
         Directory.CreateDirectory(tempDir);
+        var wallClock = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
@@ -140,6 +238,10 @@ public sealed class CliChatClient : IChatClient
             {
                 FileName = _binary,
                 WorkingDirectory = _cwd,
+                // Redirect stdin so we can close it immediately — Claude Code CLI waits ~3s
+                // for piped input on a non-TTY stdin (which an inherited server stdin is),
+                // then exits with code 1. Closing signals EOF up-front.
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -166,6 +268,23 @@ public sealed class CliChatClient : IChatClient
                     psi.ArgumentList.Add("--resume");
                     psi.ArgumentList.Add(resumeSession!);
                 }
+                // Per-endpoint permission posture. Dangerously-skip wins over permission-mode
+                // (passing both is redundant; Claude accepts either). Allowed-tools is additive
+                // and useful even when a mode is set.
+                if (_permission.ClaudeDangerouslySkipPermissions)
+                {
+                    psi.ArgumentList.Add("--dangerously-skip-permissions");
+                }
+                else if (!string.IsNullOrWhiteSpace(_permission.ClaudePermissionMode))
+                {
+                    psi.ArgumentList.Add("--permission-mode");
+                    psi.ArgumentList.Add(_permission.ClaudePermissionMode.Trim());
+                }
+                if (_permission.ClaudeAllowedTools is { Count: > 0 } allow)
+                {
+                    psi.ArgumentList.Add("--allowedTools");
+                    psi.ArgumentList.Add(string.Join(' ', allow.Where(s => !string.IsNullOrWhiteSpace(s))));
+                }
             }
             else // Codex
             {
@@ -173,6 +292,18 @@ public sealed class CliChatClient : IChatClient
                 await File.WriteAllTextAsync(configPath, CliMcpConfigBuilder.BuildCodexConfig(passthrough), ct).ConfigureAwait(false);
                 psi.Environment["CODEX_HOME"] = tempDir;
                 psi.ArgumentList.Add("exec");
+                // Codex's sandbox / approval flags belong before the `resume` subcommand vs the
+                // prompt itself — Codex parses global flags first, then the subcommand.
+                if (!string.IsNullOrWhiteSpace(_permission.CodexSandbox))
+                {
+                    psi.ArgumentList.Add("--sandbox");
+                    psi.ArgumentList.Add(_permission.CodexSandbox.Trim());
+                }
+                if (!string.IsNullOrWhiteSpace(_permission.CodexAskForApproval))
+                {
+                    psi.ArgumentList.Add("--ask-for-approval");
+                    psi.ArgumentList.Add(_permission.CodexAskForApproval.Trim());
+                }
                 if (!string.IsNullOrWhiteSpace(resumeSession))
                 {
                     psi.ArgumentList.Add("resume");
@@ -182,15 +313,22 @@ public sealed class CliChatClient : IChatClient
             }
 
             _log.LogInformation(
-                "CLI endpoint turn: binary={Binary} job={JobId} resume={Resume} passthrough={Count}",
-                _binary, _jobId ?? "(none)", resumeSession is not null, passthrough.Count);
+                "CLI endpoint turn: binary={Binary} job={JobId} resume={Resume} passthrough={Count} cwd={Cwd} model={Model} promptChars={PromptChars}",
+                _binary, _jobId ?? "(none)", resumeSession is not null, passthrough.Count, _cwd, _model ?? "(default)", prompt.Length);
+            _log.LogDebug(
+                "CLI endpoint args: {Args}",
+                FormatArgsForLog(psi.ArgumentList));
 
             Process proc;
             try { proc = Process.Start(psi)!; }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException)
             {
+                _log.LogError(ex, "Failed to start CLI binary {Binary}", _binary);
                 return $"Error: failed to start '{_binary}' — is it installed and on PATH? ({ex.Message})";
             }
+
+            try { proc.StandardInput.Close(); }
+            catch (Exception ex) { _log.LogDebug(ex, "Closing stdin for {Binary} failed (likely already closed)", _binary); }
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(_timeout);
@@ -200,13 +338,34 @@ public sealed class CliChatClient : IChatClient
                 catch { /* race with exit */ }
             });
 
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var stderrTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+            // Read the pipes WITHOUT passing the timeout token — on timeout the kill registration
+            // closes the pipes naturally and these tasks complete with whatever Claude had buffered.
+            // Passing the token would race the kill: the reader could cancel before the pipes drain,
+            // leaving us with empty stdout/stderr and no diagnostic data on timeout.
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
             try { await proc.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException)
             {
                 if (ct.IsCancellationRequested) throw;
-                return $"Error: '{_binary}' timed out after {_timeout.TotalSeconds:F0}s.";
+                // Capture whatever Claude managed to write before we killed it — a hung run is
+                // useless to debug without knowing what it printed. Use a short bounded wait
+                // because the pipes should already be closing as the kill propagates.
+                wallClock.Stop();
+                var partialStdout = await ReadPartialAsync(stdoutTask, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                var partialStderr = await ReadPartialAsync(stderrTask, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                _log.LogError(
+                    "CLI {Binary} job {JobId} timed out after {TimeoutSec}s (wallMs={WallMs}). partialStdoutChars={StdoutChars} partialStderrChars={StderrChars} partialStderr={Stderr} partialStdout={Stdout}",
+                    _binary, _jobId ?? "(none)", _timeout.TotalSeconds, wallClock.ElapsedMilliseconds,
+                    partialStdout.Length, partialStderr.Length,
+                    Truncate(partialStderr, 2000), Truncate(partialStdout, 2000));
+                var bits = new List<string>();
+                var trimmedErr = partialStderr.Trim();
+                if (trimmedErr.Length > 0) bits.Add($"stderr: {Truncate(trimmedErr, 600)}");
+                var trimmedOut = partialStdout.Trim();
+                if (trimmedOut.Length > 0) bits.Add($"stdout: {Truncate(trimmedOut, 600)}");
+                if (bits.Count == 0) bits.Add("(no stdout / stderr captured — claude.exe was idle or stuck before printing anything; check auth / network / MCP transport)");
+                return $"Error: '{_binary}' timed out after {_timeout.TotalSeconds:F0}s.\n{string.Join("\n", bits)}";
             }
 
             var stdout = await stdoutTask.ConfigureAwait(false);
@@ -214,14 +373,59 @@ public sealed class CliChatClient : IChatClient
 
             if (proc.ExitCode != 0)
             {
+                // Claude often writes diagnostics to stdout (even on failure, in --output-format json
+                // mode it sometimes prints a JSON error there). Log both streams so we don't lose
+                // whichever one carries the real signal.
+                _log.LogError(
+                    "CLI {Binary} exited with code {ExitCode}. stderr={Stderr} stdout={Stdout}",
+                    _binary, proc.ExitCode,
+                    Truncate(stderr, 2000),
+                    Truncate(stdout, 2000));
                 var trimmedErr = stderr.Trim();
                 if (trimmedErr.Length > 800) trimmedErr = trimmedErr[..800] + "…";
-                return $"Error: {_binary} exited with code {proc.ExitCode}.\n{trimmedErr}";
+                var trimmedOut = stdout.Trim();
+                if (trimmedOut.Length > 400) trimmedOut = trimmedOut[..400] + "…";
+                var detail = trimmedErr.Length > 0
+                    ? trimmedErr
+                    : (trimmedOut.Length > 0 ? $"(no stderr; stdout was: {trimmedOut})" : "(no stderr or stdout)");
+                return $"Error: {_binary} exited with code {proc.ExitCode}.\n{detail}";
             }
 
-            return _kind == CliKind.Claude
-                ? ParseClaudeJson(stdout)
-                : ParseCodex(stdout);
+            if (!string.IsNullOrEmpty(stderr))
+                _log.LogDebug("CLI {Binary} stderr (exit 0): {Stderr}", _binary, Truncate(stderr, 1000));
+
+            wallClock.Stop();
+            if (_kind == CliKind.Claude)
+            {
+                var text = ParseClaudeJson(stdout, out var outcome);
+                _log.LogInformation(
+                    "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} sessionId={SessionId} isError={IsError} apiStatus={ApiStatus} cliDurationMs={CliMs} cliApiMs={CliApiMs} costUsd={Cost} turns={Turns} inTok={InTok} outTok={OutTok} cacheReadTok={CacheReadTok} cacheCreateTok={CacheCreateTok}",
+                    _binary, _jobId ?? "(none)",
+                    wallClock.ElapsedMilliseconds, stdout.Length, text.Length,
+                    outcome.SessionId ?? "(none)", outcome.IsError, outcome.ApiErrorStatus?.ToString() ?? "(none)",
+                    outcome.DurationMs?.ToString() ?? "(none)", outcome.DurationApiMs?.ToString() ?? "(none)",
+                    outcome.TotalCostUsd?.ToString() ?? "(none)", outcome.NumTurns?.ToString() ?? "(none)",
+                    outcome.InputTokens?.ToString() ?? "(none)", outcome.OutputTokens?.ToString() ?? "(none)",
+                    outcome.CacheReadTokens?.ToString() ?? "(none)", outcome.CacheCreationTokens?.ToString() ?? "(none)");
+                if (outcome.IsError)
+                {
+                    // Claude can return is_error=true with exit code 0 (e.g. 404 model not found
+                    // landed as JSON on stdout). Surface that loudly so it doesn't look like a
+                    // silent success when the model never actually answered.
+                    _log.LogWarning(
+                        "CLI {Binary} job {JobId} returned is_error=true (apiStatus={ApiStatus}, result={Snippet})",
+                        _binary, _jobId ?? "(none)", outcome.ApiErrorStatus?.ToString() ?? "(none)", Truncate(text, 400));
+                }
+                return text;
+            }
+            else
+            {
+                var text = ParseCodex(stdout);
+                _log.LogInformation(
+                    "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars}",
+                    _binary, _jobId ?? "(none)", wallClock.ElapsedMilliseconds, stdout.Length, text.Length);
+                return text;
+            }
         }
         finally
         {
@@ -230,8 +434,9 @@ public sealed class CliChatClient : IChatClient
         }
     }
 
-    private string ParseClaudeJson(string stdout)
+    private string ParseClaudeJson(string stdout, out ClaudeOutcome outcome)
     {
+        outcome = default;
         var trimmed = stdout.Trim();
         if (trimmed.Length == 0) return "(claude returned no output)";
         try
@@ -241,19 +446,59 @@ public sealed class CliChatClient : IChatClient
             if (doc.RootElement.TryGetProperty("error", out var err))
             {
                 var msg = err.ValueKind == JsonValueKind.String ? err.GetString() : err.GetRawText();
+                outcome.IsError = true;
                 return $"Error from claude: {msg}";
             }
-            if (_jobId is not null && doc.RootElement.TryGetProperty("session_id", out var sid))
+
+            outcome.SessionId = TryReadString(doc.RootElement, "session_id");
+            outcome.IsError = TryReadBool(doc.RootElement, "is_error") ?? false;
+            outcome.ApiErrorStatus = TryReadInt(doc.RootElement, "api_error_status");
+            outcome.DurationMs = TryReadLong(doc.RootElement, "duration_ms");
+            outcome.DurationApiMs = TryReadLong(doc.RootElement, "duration_api_ms");
+            outcome.TotalCostUsd = TryReadDecimal(doc.RootElement, "total_cost_usd");
+            outcome.NumTurns = TryReadInt(doc.RootElement, "num_turns");
+            if (doc.RootElement.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
             {
-                var sessionId = sid.GetString();
-                if (!string.IsNullOrWhiteSpace(sessionId))
-                    _sessions.Set(_jobId, _sessionKey, sessionId);
+                outcome.InputTokens = TryReadLong(usage, "input_tokens");
+                outcome.OutputTokens = TryReadLong(usage, "output_tokens");
+                outcome.CacheReadTokens = TryReadLong(usage, "cache_read_input_tokens");
+                outcome.CacheCreationTokens = TryReadLong(usage, "cache_creation_input_tokens");
             }
+
+            if (_jobId is not null && !string.IsNullOrWhiteSpace(outcome.SessionId))
+                _sessions.Set(_jobId, _sessionKey, _cwd, outcome.SessionId);
+
             if (doc.RootElement.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String)
                 return result.GetString() ?? "";
         }
-        catch (JsonException) { /* fall through */ }
+        catch (JsonException) { /* fall through to raw */ }
         return trimmed;
+    }
+
+    private static string? TryReadString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private static bool? TryReadBool(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False) ? v.GetBoolean() : null;
+    private static int? TryReadInt(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+    private static long? TryReadLong(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : null;
+    private static decimal? TryReadDecimal(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDecimal(out var n) ? n : null;
+
+    private struct ClaudeOutcome
+    {
+        public string? SessionId;
+        public bool IsError;
+        public int? ApiErrorStatus;
+        public long? DurationMs;
+        public long? DurationApiMs;
+        public decimal? TotalCostUsd;
+        public int? NumTurns;
+        public long? InputTokens;
+        public long? OutputTokens;
+        public long? CacheReadTokens;
+        public long? CacheCreationTokens;
     }
 
     private string ParseCodex(string stdout)
@@ -273,7 +518,7 @@ public sealed class CliChatClient : IChatClient
                 {
                     var sessionId = sid.GetString();
                     if (!string.IsNullOrWhiteSpace(sessionId))
-                        _sessions.Set(_jobId, _sessionKey, sessionId);
+                        _sessions.Set(_jobId, _sessionKey, _cwd, sessionId);
                 }
             }
             catch (JsonException) { /* ignore */ }
@@ -292,11 +537,48 @@ public sealed class CliChatClient : IChatClient
                 {
                     var sessionId = parts[1].Trim();
                     if (!string.IsNullOrWhiteSpace(sessionId))
-                        _sessions.Set(_jobId, _sessionKey, sessionId);
+                        _sessions.Set(_jobId, _sessionKey, _cwd, sessionId);
                 }
             }
         }
 
         return trimmed;
+    }
+
+    private static string FormatArgsForLog(System.Collections.ObjectModel.Collection<string> args)
+    {
+        // Surface the full launch arg list at Debug, but cap any single arg (the prompt can be
+        // huge) so the log line stays readable. Quote args that contain whitespace.
+        var sb = new StringBuilder();
+        for (var i = 0; i < args.Count; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            var a = Truncate(args[i], 400);
+            if (a.Contains(' ') || a.Contains('\t') || a.Length == 0)
+            {
+                sb.Append('"').Append(a.Replace("\"", "\\\"")).Append('"');
+            }
+            else sb.Append(a);
+        }
+        return sb.ToString();
+    }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "…";
+
+    /// <summary>
+    /// Bounded await over an in-flight ReadToEndAsync task — used on the timeout path so we
+    /// can grab whatever Claude managed to write before the kill propagated, without hanging
+    /// forever if a pipe didn't actually close.
+    /// </summary>
+    private static async Task<string> ReadPartialAsync(Task<string> readTask, TimeSpan timeout)
+    {
+        try
+        {
+            var done = await Task.WhenAny(readTask, Task.Delay(timeout)).ConfigureAwait(false);
+            if (done == readTask) return await readTask.ConfigureAwait(false);
+        }
+        catch { /* swallow — caller logs an empty string in that case */ }
+        return "";
     }
 }

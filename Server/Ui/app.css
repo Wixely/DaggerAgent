@@ -66,6 +66,7 @@ body { font-feature-settings: "ss01"; }
 }
 .job-list .job-item:hover { background: var(--bs-tertiary-bg); }
 .job-list .job-item.active { background: var(--bs-tertiary-bg); border-left-color: var(--dagger-mark); }
+.job-list .job-item.interrupted { border-left-color: var(--bs-warning); }
 .job-list .job-id { font-family: var(--bs-font-monospace); font-size: 0.75rem; color: var(--bs-secondary-color); }
 .job-list .job-status { font-size: 0.7rem; text-transform: lowercase; }
 
@@ -292,7 +293,7 @@ body { font-feature-settings: "ss01"; }
 .tab-pane:not(.active) { display: none; }
 .tab-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 
-.endpoints-list .endpoint-card, .mcp-list .mcp-card-edit {
+.endpoints-list .endpoint-card {
   border: 1px solid var(--bs-border-color); border-radius: 6px;
   padding: 8px 10px; margin-bottom: 8px;
   font-size: 0.82rem;
@@ -311,11 +312,17 @@ body { font-feature-settings: "ss01"; }
 .endpoints-list .endpoint-meta { font-size: 0.72rem; color: var(--bs-secondary-color); margin-top: 2px; word-break: break-all; }
 .endpoints-list .endpoint-actions { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
 .endpoints-list .endpoint-actions .btn { padding: 0.18rem 0.5rem; font-size: 0.72rem; }
-.endpoints-list .endpoint-form, .mcp-list .mcp-card-edit .mcp-form {
+.endpoints-list .endpoint-form, .mcp-list .mcp-card .mcp-form {
   display: flex; flex-direction: column; gap: 6px;
   margin-top: 6px; padding-top: 6px;
   border-top: 1px dashed var(--bs-border-color);
 }
+.endpoints-list .endpoint-cli-block {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dotted var(--bs-border-color);
+}
+.endpoints-list .endpoint-cli-heading { text-transform: uppercase; letter-spacing: 0.04em; }
 .endpoints-list .endpoint-form .row-2, .mcp-list .mcp-form .row-2 { display: flex; gap: 6px; }
 .endpoints-list .endpoint-form .row-2 > *, .mcp-list .mcp-form .row-2 > * { flex: 1; }
 .endpoints-list .endpoint-form label, .mcp-list .mcp-form label {

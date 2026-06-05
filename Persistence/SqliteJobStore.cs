@@ -117,9 +117,15 @@ ON CONFLICT(id) DO UPDATE SET
 
     public async Task<IReadOnlyList<JobRecord>> ListAsync(int limit = 50, CancellationToken cancellationToken = default)
     {
+        // Project Interrupted / TriggerSourceId out of state_json via SQLite's json_extract so
+        // we don't deserialise every row just to render the jobs list. Keys match the C# property
+        // names (PascalCase) because JsonOptions uses the default naming policy.
         await using var conn = Open();
         var rows = await conn.QueryAsync<JobRow>(@"
-SELECT id, parent_id, status, model, created_at, updated_at, state_json
+SELECT
+    id, parent_id, status, model, created_at, updated_at, state_json,
+    COALESCE(json_extract(state_json, '$.Interrupted'), 0)     AS interrupted,
+    json_extract(state_json, '$.TriggerSourceId')              AS trigger_source_id
 FROM jobs ORDER BY updated_at DESC LIMIT @Limit", new { Limit = limit }).ConfigureAwait(false);
         return rows.Select(r => new JobRecord
         {
@@ -130,6 +136,8 @@ FROM jobs ORDER BY updated_at DESC LIMIT @Limit", new { Limit = limit }).Configu
             CreatedAt = DateTimeOffset.Parse(r.created_at),
             UpdatedAt = DateTimeOffset.Parse(r.updated_at),
             StateJson = r.state_json,
+            Interrupted = r.interrupted != 0,
+            TriggerSourceId = string.IsNullOrEmpty(r.trigger_source_id) ? null : r.trigger_source_id,
         }).ToList();
     }
 
@@ -146,6 +154,45 @@ FROM jobs ORDER BY updated_at DESC LIMIT @Limit", new { Limit = limit }).Configu
 INSERT INTO job_events (job_id, ts, kind, payload_json)
 VALUES (@JobId, @Ts, @Kind, @Payload);",
             new { JobId = jobId, Ts = DateTimeOffset.UtcNow.ToString("O"), Kind = kind, Payload = payloadJson }).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<string>> SweepOrphansAsync(CancellationToken cancellationToken = default)
+    {
+        // Two-step: load each Running row, patch the JSON + status, write it back.
+        // Cheaper would be a raw UPDATE on the status column, but state_json also carries
+        // Status and Interrupted — we want both representations consistent so the UI doesn't
+        // see a row tagged Running in the JSON but Paused in the column.
+        await using var conn = Open();
+        var orphans = (await conn.QueryAsync<JobRow>(@"
+SELECT id, parent_id, status, model, created_at, updated_at, state_json
+FROM jobs WHERE status = 'Running'").ConfigureAwait(false)).ToList();
+        if (orphans.Count == 0) return Array.Empty<string>();
+
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var ids = new List<string>(orphans.Count);
+        foreach (var row in orphans)
+        {
+            ConversationState? state;
+            try { state = JsonSerializer.Deserialize<ConversationState>(row.state_json, JsonOptions); }
+            catch (JsonException ex)
+            {
+                _log.LogWarning(ex, "Orphan sweep: failed to deserialise job {JobId}; flipping status only", row.id);
+                await conn.ExecuteAsync(
+                    "UPDATE jobs SET status = 'Paused', updated_at = @Now WHERE id = @Id",
+                    new { Id = row.id, Now = now }).ConfigureAwait(false);
+                ids.Add(row.id);
+                continue;
+            }
+            if (state is null) continue;
+            state.Status = JobStatus.Paused;
+            state.Interrupted = true;
+            state.UpdatedAt = DateTimeOffset.UtcNow;
+            await conn.ExecuteAsync(@"
+UPDATE jobs SET status = 'Paused', updated_at = @Now, state_json = @Json WHERE id = @Id",
+                new { Id = row.id, Now = now, Json = JsonSerializer.Serialize(state, JsonOptions) }).ConfigureAwait(false);
+            ids.Add(row.id);
+        }
+        return ids;
     }
 
     private SqliteConnection Open()
@@ -180,5 +227,7 @@ VALUES (@JobId, @Ts, @Kind, @Payload);",
         public string created_at { get; set; } = "";
         public string updated_at { get; set; } = "";
         public string state_json { get; set; } = "";
+        public long interrupted { get; set; }
+        public string? trigger_source_id { get; set; }
     }
 }

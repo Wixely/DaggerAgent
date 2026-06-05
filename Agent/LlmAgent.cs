@@ -113,10 +113,27 @@ public sealed class LlmAgent
         return state;
     }
 
+    /// <summary>
+    /// Resume an interrupted job. Picks a short continuation prompt that nudges the model
+    /// to recover from where the prior turn was cut off, then runs one normal turn. The
+    /// caller decides whether this was a manual click or an auto-resume sweep — both share
+    /// the same code path; the only difference is that auto-resume increments
+    /// <see cref="ConversationState.AutoResumeAttempts"/> first.
+    /// </summary>
+    public Task<ChatResponse> ResumeAsync(ConversationState state, CancellationToken cancellationToken = default)
+    {
+        const string continuation =
+            "The previous turn was cut short because the DaggerAgent service stopped mid-execution. " +
+            "Pick up from where you left off based on the conversation above — re-check any plan steps " +
+            "that were in_progress and resume the task. Don't repeat tool calls you already completed.";
+        return RunTurnAsync(state, continuation, cancellationToken);
+    }
+
     public async Task<ChatResponse> RunTurnAsync(ConversationState state, string userMessage, CancellationToken cancellationToken = default)
     {
         state.History.Add(new ChatMessage(ChatRole.User, userMessage));
         state.Status = JobStatus.Running;
+        state.Interrupted = false;
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
 
@@ -213,6 +230,7 @@ public sealed class LlmAgent
             state.History.Add(new ChatMessage(ChatRole.User, userMessage));
         }
         state.Status = JobStatus.Running;
+        state.Interrupted = false;
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
 

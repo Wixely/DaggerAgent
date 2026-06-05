@@ -48,6 +48,13 @@ public sealed class TriggerOptions
     /// </summary>
     public string JobPreamble { get; set; } =
         "You were triggered by a mention in a ticket. Read the details below, decide whether you can act on them, and proceed.";
+
+    /// <summary>
+    /// Maximum number of times a trigger-spawned job can be auto-resumed after the process
+    /// was killed mid-turn. Capped to stop a poison job from looping on every restart.
+    /// Set to 0 to disable auto-resume entirely — orphans stay paused for manual click.
+    /// </summary>
+    public int MaxAutoResumeAttempts { get; set; } = 3;
 }
 
 public sealed class TriggerSource

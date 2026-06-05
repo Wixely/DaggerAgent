@@ -48,6 +48,14 @@ public sealed class TriggerService : BackgroundService
         try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 
+        // Auto-resume any trigger-originated jobs that were orphaned by the last shutdown.
+        // The orphan sweep already ran in Program.cs and flipped Running→Paused; here we
+        // only re-launch the subset that came from a TriggerSource, respecting the per-job
+        // attempt cap so a poison job stops eating retries.
+        try { await ResumeOrphanedTriggerJobsAsync(stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { _log.LogError(ex, "Auto-resume sweep failed"); }
+
         bool? lastActive = null;
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -97,12 +105,154 @@ public sealed class TriggerService : BackgroundService
         if (spawned > 0) _log.LogInformation("Trigger cycle: spawned {Count} job(s)", spawned);
     }
 
+    private async Task ResumeOrphanedTriggerJobsAsync(CancellationToken ct)
+    {
+        if (_options.MaxAutoResumeAttempts <= 0)
+        {
+            _log.LogDebug("Auto-resume disabled (MaxAutoResumeAttempts={Max})", _options.MaxAutoResumeAttempts);
+            return;
+        }
+
+        using var scope = _services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<Persistence.IJobStore>();
+
+        // Walk the most recent jobs and pick out the orphans that came from a TriggerSource.
+        // ListAsync returns by updated_at DESC; default limit is 50 which is plenty — older
+        // jobs are unlikely to be worth auto-resuming anyway (a long-stopped service won't
+        // have a relevant working state).
+        var recent = await store.ListAsync(50, ct).ConfigureAwait(false);
+        var resumed = 0;
+        var skipped = 0;
+        foreach (var rec in recent)
+        {
+            if (!string.Equals(rec.Status, nameof(JobStatus.Paused), StringComparison.OrdinalIgnoreCase)) continue;
+            var state = await store.LoadAsync(rec.Id, ct).ConfigureAwait(false);
+            if (state is null || !state.Interrupted || string.IsNullOrEmpty(state.TriggerSourceId)) continue;
+
+            if (state.AutoResumeAttempts >= _options.MaxAutoResumeAttempts)
+            {
+                _log.LogWarning(
+                    "Auto-resume: job {JobId} (source={Source}) hit attempt cap ({Cap}) — leaving paused for manual resume",
+                    state.Id, state.TriggerSourceId, _options.MaxAutoResumeAttempts);
+                skipped++;
+                continue;
+            }
+
+            state.AutoResumeAttempts++;
+            // Persist the bumped counter before kicking off the turn so a crash partway
+            // through the resume still counts against the budget.
+            await store.SaveAsync(state, ct).ConfigureAwait(false);
+
+            _log.LogInformation(
+                "Auto-resuming orphaned trigger job {JobId} (source={Source}, attempt={Attempt}/{Cap})",
+                state.Id, state.TriggerSourceId, state.AutoResumeAttempts, _options.MaxAutoResumeAttempts);
+            FireAndForgetResume(state);
+            resumed++;
+        }
+        if (resumed > 0 || skipped > 0)
+            _log.LogInformation("Auto-resume sweep complete: resumed={Resumed} skipped={Skipped}", resumed, skipped);
+    }
+
+    private void FireAndForgetResume(Agent.ConversationState state)
+    {
+        // Match SpawnJobAsync's fire-and-forget pattern: we don't await the full agent run
+        // here; persistence captures completion. Use a fresh scope per task so the agent's
+        // scoped dependencies (LlmAgent is transient) don't outlive a single turn.
+        var jobId = state.Id;
+        var sourceId = state.TriggerSourceId;
+        var historyBefore = state.History.Count;
+        _ = Task.Run(async () =>
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                using var scope = _services.CreateScope();
+                var agent = scope.ServiceProvider.GetRequiredService<Agent.LlmAgent>();
+                var response = await agent.ResumeAsync(state, CancellationToken.None).ConfigureAwait(false);
+                sw.Stop();
+
+                // Background turns have no SSE consumer, so without an explicit completion log
+                // the only sign anything happened is the SQLite row being mutated. Surface the
+                // shape of what the agent produced so a missing response (empty / tool-call-only)
+                // is visible in the log rather than just in the persisted history blob.
+                var newMessages = state.History.Count - historyBefore;
+                var assistantText = response?.Text ?? "";
+                _log.LogInformation(
+                    "Auto-resume completed: job={JobId} source={Source} status={Status} wallMs={WallMs} historyDelta={Delta} assistantChars={AsstChars} assistantSnippet={Snippet}",
+                    jobId, sourceId ?? "(none)", state.Status, sw.ElapsedMilliseconds, newMessages,
+                    assistantText.Length, Truncate(assistantText, 240));
+
+                if (string.IsNullOrWhiteSpace(assistantText))
+                {
+                    // A turn that ends without an assistant-visible reply (e.g. only tool calls,
+                    // or the model returned an empty answer) is the failure mode the user hit:
+                    // the chat looks dead but nothing crashed. Promote it so it's spotted quickly.
+                    _log.LogWarning(
+                        "Auto-resume produced no assistant text for job {JobId} (historyDelta={Delta}, finishReason={Finish}). " +
+                        "Check the persisted history — the agent may have stalled mid-tool-loop or hit max turns.",
+                        jobId, newMessages, state.LastTurnFinishReason ?? "(none)");
+                }
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                _log.LogError(ex, "Auto-resumed job {JobId} failed after {WallMs}ms", jobId, sw.ElapsedMilliseconds);
+            }
+        }, CancellationToken.None);
+    }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "…";
+
+    /// <summary>
+    /// Manually run a single trigger source out-of-band — used by the web UI "Run now" button.
+    /// Bypasses the background loop's interval but otherwise behaves identically: same MCP server
+    /// lookup, same per-match dedupe via <see cref="TriggerStateStore.ClaimMatchAsync"/>, and the
+    /// cursor advances on completion. Returns a small report so the UI can show the outcome.
+    /// </summary>
+    public async Task<RunSourceOnceResult> RunSourceOnceAsync(string sourceId, CancellationToken ct)
+    {
+        var source = _options.Sources.FirstOrDefault(s =>
+            string.Equals(s.Id, sourceId, StringComparison.OrdinalIgnoreCase));
+        if (source is null)
+            return new RunSourceOnceResult(false, 0, $"No trigger source with id '{sourceId}'");
+
+        try
+        {
+            var budget = Math.Max(1, _options.MaxJobsPerCycle);
+            var spawned = await PollSourceAsync(source, budget, ct).ConfigureAwait(false);
+            return new RunSourceOnceResult(true, spawned, null);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Manual run of trigger source {Source} failed", sourceId);
+            return new RunSourceOnceResult(false, 0, ex.Message);
+        }
+    }
+
     private async Task<int> PollSourceAsync(TriggerSource source, int remainingBudget, CancellationToken ct)
     {
         if (!_mcpHost.Clients.TryGetValue(source.McpServer, out var client))
         {
-            _log.LogWarning("Trigger source {Source}: configured MCP server '{Server}' not connected — skipping",
-                source.Id, source.McpServer);
+            // Surface enough context to tell apart the two common failure modes: the name in
+            // the trigger config doesn't match any configured Mcp:Servers entry, or it matches
+            // but the connection itself failed. The status dictionary holds the connect-time error.
+            var status = _mcpHost.ConnectionStatuses.FirstOrDefault(s =>
+                string.Equals(s.Name, source.McpServer, StringComparison.OrdinalIgnoreCase));
+            if (status is null)
+            {
+                var known = string.Join(", ", _mcpHost.ConnectionStatuses.Select(s => s.Name));
+                _log.LogWarning(
+                    "Trigger source {Source}: MCP server '{Server}' is not configured. Known servers: [{Known}]",
+                    source.Id, source.McpServer, known);
+            }
+            else
+            {
+                _log.LogWarning(
+                    "Trigger source {Source}: MCP server '{Server}' has status={Status} ({Detail}) — skipping",
+                    source.Id, source.McpServer, status.Status, status.Detail ?? "no detail");
+            }
             return 0;
         }
 
@@ -177,14 +327,27 @@ public sealed class TriggerService : BackgroundService
     private async Task<IReadOnlyList<TriggerMatch>> FetchMentionsAsync(
         ModelContextProtocol.Client.McpClient client, TriggerSource source, DateTimeOffset? since, int budget, CancellationToken ct)
     {
+        // Azure DevOps' WIQL treats date fields as date precision and rejects any time-bearing
+        // literal. The azdo MCP server's list_mentions_since builds WIQL from this string, so
+        // for that kind we hand it a date-only value. Per-match dedupe in TriggerStateStore
+        // absorbs the resulting same-day re-polls.
+        var kind = source.Kind.Trim().ToLowerInvariant();
+        var isAzdo = kind is "azuredevops" or "azdo";
+        var sinceWire = since is { } s
+            ? (isAzdo ? s.UtcDateTime.ToString("yyyy-MM-dd") : s.ToString("O"))
+            : null;
+
         var args = new Dictionary<string, object?>
         {
             ["mention"] = EffectivePhrase(source),
-            ["sinceUtc"] = since?.ToString("O"),
+            ["sinceUtc"] = sinceWire,
             ["includeClosed"] = false,
             ["limit"] = Math.Min(budget * 4, 200),
         };
         AddScopeArg(args, source);
+
+        _log.LogDebug("Trigger source {Source}: calling list_mentions_since with sinceUtc={Since} kind={Kind}",
+            source.Id, sinceWire ?? "(null)", kind);
 
         var envelope = await McpStructuredCall.CallAsync<TriggerMatchEnvelope>(client, "list_mentions_since", args, ct).ConfigureAwait(false);
         if (envelope is null) return Array.Empty<TriggerMatch>();
@@ -278,7 +441,13 @@ public sealed class TriggerService : BackgroundService
             sb.Append("[System.TeamProject] = '").Append(EscapeWiql(source.Scope)).Append("' AND ");
         sb.Append("[System.State] NOT IN ('Closed', 'Resolved', 'Done', 'Removed')");
         if (since is { } s)
-            sb.Append(" AND [System.ChangedDate] >= '").Append(s.UtcDateTime.ToString("O")).Append('\'');
+        {
+            // WIQL treats [System.ChangedDate] as date precision — supplying a time component
+            // returns "You cannot supply a time with the date when running a query using date
+            // precision." Format as date-only; the per-match dedupe in TriggerStateStore
+            // (INSERT OR IGNORE on source_id+match_key) absorbs the resulting same-day re-polls.
+            sb.Append(" AND [System.ChangedDate] >= '").Append(s.UtcDateTime.ToString("yyyy-MM-dd")).Append('\'');
+        }
         if (source.Mode == TriggerMode.Label && !string.IsNullOrWhiteSpace(source.Filter))
             sb.Append(" AND [System.Tags] CONTAINS '").Append(EscapeWiql(source.Filter)).Append('\'');
         if (source.Mode == TriggerMode.Assignee && !string.IsNullOrWhiteSpace(source.Filter))
@@ -415,6 +584,9 @@ public sealed class TriggerService : BackgroundService
 
         var state = agent.CreateState(model);
         if (chosenEndpoint is not null) state.EndpointId = chosenEndpoint.Id;
+        // Stamp the trigger source so the startup auto-resume sweep knows which orphans were
+        // ours to relaunch (versus user-initiated jobs which stay paused for a manual click).
+        state.TriggerSourceId = source.Id;
 
         var prompt =
             $"{_options.JobPreamble}\n\n" +
@@ -428,12 +600,39 @@ public sealed class TriggerService : BackgroundService
         // Fire and forget — TriggerService doesn't await the agent's full execution; we just
         // start it and return. The agent's persistence layer captures completion / failure.
         var jobId = state.Id;
+        var sourceId = source.Id;
         _ = Task.Run(async () =>
         {
-            try { await agent.RunTurnAsync(state, prompt, CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception ex) { _log.LogError(ex, "Triggered job {JobId} failed", jobId); }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var response = await agent.RunTurnAsync(state, prompt, CancellationToken.None).ConfigureAwait(false);
+                sw.Stop();
+                // Background turn has no SSE consumer; emit a completion line so a "nothing
+                // happened" run is visible. assistantSnippet helps tell apart a real reply from
+                // a tool-call-only / empty-result turn that leaves the chat looking dead.
+                var assistantText = response?.Text ?? "";
+                _log.LogInformation(
+                    "Triggered job completed: job={JobId} source={Source} status={Status} wallMs={WallMs} assistantChars={AsstChars} assistantSnippet={Snippet}",
+                    jobId, sourceId, state.Status, sw.ElapsedMilliseconds, assistantText.Length, Truncate(assistantText, 240));
+                if (string.IsNullOrWhiteSpace(assistantText))
+                {
+                    _log.LogWarning(
+                        "Triggered job {JobId} produced no assistant text (finishReason={Finish}). " +
+                        "The chat will look empty in the UI; inspect history for stuck tool loops or empty model output.",
+                        jobId, state.LastTurnFinishReason ?? "(none)");
+                }
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                _log.LogError(ex, "Triggered job {JobId} failed after {WallMs}ms", jobId, sw.ElapsedMilliseconds);
+            }
         }, CancellationToken.None);
 
         return jobId;
     }
 }
+
+/// <summary>Outcome of <see cref="TriggerService.RunSourceOnceAsync"/>.</summary>
+public sealed record RunSourceOnceResult(bool Ok, int Spawned, string? Error);

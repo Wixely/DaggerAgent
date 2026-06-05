@@ -51,12 +51,14 @@ public static class JobsEndpoints
             LlmAgent agent,
             IJobStore store,
             IOptions<OpenAIOptions> openAi,
+            IOptions<EndpointsOptions> endpoints,
             IOptions<AgentOptions> agentOpts,
             CancellationToken ct) =>
         {
             await store.InitializeAsync(ct);
-            var model = req.Model ?? openAi.Value.DefaultModel;
+            var model = JobsStreamEndpoints.ResolveModel(req.Model, req.EndpointId, endpoints.Value, openAi.Value);
             var state = agent.CreateState(model, req.System);
+            if (!string.IsNullOrWhiteSpace(req.EndpointId)) state.EndpointId = req.EndpointId;
             var response = await agent.RunTurnAsync(state, req.Prompt, ct);
             return Results.Ok(new CreateJobResponse(state.Id, state.Status.ToString(), state.Model, response.Text ?? ""));
         });
@@ -89,8 +91,9 @@ public static class JobsEndpoints
         {
             var state = await store.LoadAsync(id, ct);
             if (state is null) return Results.NotFound();
-            // Resume = continue from current state with an empty "carry on" prompt.
-            var response = await agent.RunTurnAsync(state, "Continue.", ct);
+            // ResumeAsync injects a recovery-flavoured prompt that nudges the model to pick up
+            // from in-progress plan steps rather than starting over. Also clears Interrupted.
+            var response = await agent.ResumeAsync(state, ct);
             return Results.Ok(new SendMessageResponse(state.Id, state.Status.ToString(), response.Text ?? ""));
         });
 
@@ -111,6 +114,8 @@ public static class JobsEndpoints
                 model = r.Model,
                 createdAt = r.CreatedAt,
                 updatedAt = r.UpdatedAt,
+                interrupted = r.Interrupted,
+                triggerSourceId = r.TriggerSourceId,
             }));
         });
 
