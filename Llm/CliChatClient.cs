@@ -22,7 +22,7 @@ namespace Daggeragent.Llm;
 /// </summary>
 public sealed class CliChatClient : IChatClient
 {
-    public enum CliKind { Claude, Codex }
+    public enum CliKind { Claude, Codex, Copilot }
 
     private readonly CliKind _kind;
     private readonly string _binary;
@@ -49,7 +49,13 @@ public sealed class CliChatClient : IChatClient
         PermissionFlags? permission = null)
     {
         _kind = kind;
-        var defaultBinary = kind == CliKind.Claude ? "claude" : "codex";
+        var defaultBinary = kind switch
+        {
+            CliKind.Claude => "claude",
+            CliKind.Codex => "codex",
+            CliKind.Copilot => "copilot",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
         _binary = string.IsNullOrWhiteSpace(binaryPathOverride) ? defaultBinary : binaryPathOverride.Trim();
         _sessionKey = defaultBinary;
         _model = model;
@@ -64,8 +70,10 @@ public sealed class CliChatClient : IChatClient
 
     /// <summary>
     /// Per-endpoint permission configuration. Maps to <c>--permission-mode</c> / <c>--allowedTools</c>
-    /// / <c>--dangerously-skip-permissions</c> for Claude and <c>--sandbox</c> / <c>--ask-for-approval</c>
-    /// for Codex. Empty / default values mean "don't emit the flag at all" — the CLI's own default
+    /// / <c>--dangerously-skip-permissions</c> for Claude, <c>--sandbox</c> / <c>--ask-for-approval</c>
+    /// for Codex, and <c>--allow-all-tools</c> / <c>--allow-all-paths</c> / <c>--allow-all-urls</c>
+    /// / <c>--autopilot</c> / <c>--allow-tool</c> / <c>--deny-tool</c> / <c>--no-ask-user</c> for
+    /// Copilot. Empty / default values mean "don't emit the flag at all" — the CLI's own default
     /// applies in that case.
     /// </summary>
     public sealed record PermissionFlags(
@@ -73,7 +81,15 @@ public sealed class CliChatClient : IChatClient
         IReadOnlyList<string>? ClaudeAllowedTools = null,
         bool ClaudeDangerouslySkipPermissions = false,
         string CodexSandbox = "",
-        string CodexAskForApproval = "")
+        string CodexAskForApproval = "",
+        bool CopilotAllowAllTools = false,
+        bool CopilotAllowAllPaths = false,
+        bool CopilotAllowAllUrls = false,
+        bool CopilotAutopilot = false,
+        int CopilotMaxAutopilotContinues = 0,
+        IReadOnlyList<string>? CopilotAllowedTools = null,
+        IReadOnlyList<string>? CopilotDeniedTools = null,
+        bool CopilotNoAskUser = false)
     {
         public static readonly PermissionFlags None = new();
     }
@@ -286,7 +302,7 @@ public sealed class CliChatClient : IChatClient
                     psi.ArgumentList.Add(string.Join(' ', allow.Where(s => !string.IsNullOrWhiteSpace(s))));
                 }
             }
-            else // Codex
+            else if (_kind == CliKind.Codex)
             {
                 var configPath = Path.Combine(tempDir, "config.toml");
                 await File.WriteAllTextAsync(configPath, CliMcpConfigBuilder.BuildCodexConfig(passthrough), ct).ConfigureAwait(false);
@@ -310,6 +326,68 @@ public sealed class CliChatClient : IChatClient
                     psi.ArgumentList.Add(resumeSession!);
                 }
                 psi.ArgumentList.Add(prompt);
+            }
+            else // Copilot
+            {
+                // Same mcpServers JSON shape as Claude — supplied per-invocation via
+                // --additional-mcp-config @<path>. Copilot supports both HTTP and stdio MCP
+                // servers (unlike Codex which is stdio-only), so nothing is skipped.
+                var configPath = Path.Combine(tempDir, "copilot-mcp.json");
+                await File.WriteAllTextAsync(configPath, CliMcpConfigBuilder.BuildCopilotConfig(passthrough), ct).ConfigureAwait(false);
+                // Isolate per-invocation state (skills cache, session index) so a
+                // multi-tenant DaggerAgent doesn't share auth or session ids across users.
+                psi.Environment["COPILOT_HOME"] = tempDir;
+                psi.ArgumentList.Add("-p");
+                psi.ArgumentList.Add(prompt);
+                psi.ArgumentList.Add("--output-format");
+                psi.ArgumentList.Add("json");
+                // --silent drops the human-readable header/usage block so JSONL parsing sees
+                // only the model's structured events.
+                psi.ArgumentList.Add("--silent");
+                psi.ArgumentList.Add("--additional-mcp-config");
+                psi.ArgumentList.Add("@" + configPath);
+                if (!string.IsNullOrWhiteSpace(_model))
+                {
+                    psi.ArgumentList.Add("--model");
+                    psi.ArgumentList.Add(_model);
+                }
+                if (!string.IsNullOrWhiteSpace(resumeSession))
+                {
+                    // --session-id is exact match (vs --resume which does fuzzy/prefix matching).
+                    // We stored the id ourselves so we always want an exact match.
+                    psi.ArgumentList.Add("--session-id");
+                    psi.ArgumentList.Add(resumeSession!);
+                }
+                if (_permission.CopilotAllowAllTools) psi.ArgumentList.Add("--allow-all-tools");
+                if (_permission.CopilotAllowAllPaths) psi.ArgumentList.Add("--allow-all-paths");
+                if (_permission.CopilotAllowAllUrls) psi.ArgumentList.Add("--allow-all-urls");
+                if (_permission.CopilotNoAskUser) psi.ArgumentList.Add("--no-ask-user");
+                if (_permission.CopilotAutopilot)
+                {
+                    psi.ArgumentList.Add("--autopilot");
+                    if (_permission.CopilotMaxAutopilotContinues > 0)
+                    {
+                        psi.ArgumentList.Add("--max-autopilot-continues");
+                        psi.ArgumentList.Add(_permission.CopilotMaxAutopilotContinues.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                }
+                if (_permission.CopilotAllowedTools is { Count: > 0 } cAllow)
+                {
+                    // Copilot takes --allow-tool as a repeatable single-value flag (one tool per flag).
+                    foreach (var t in cAllow.Where(s => !string.IsNullOrWhiteSpace(s)))
+                    {
+                        psi.ArgumentList.Add("--allow-tool");
+                        psi.ArgumentList.Add(t);
+                    }
+                }
+                if (_permission.CopilotDeniedTools is { Count: > 0 } cDeny)
+                {
+                    foreach (var t in cDeny.Where(s => !string.IsNullOrWhiteSpace(s)))
+                    {
+                        psi.ArgumentList.Add("--deny-tool");
+                        psi.ArgumentList.Add(t);
+                    }
+                }
             }
 
             _log.LogInformation(
@@ -418,12 +496,27 @@ public sealed class CliChatClient : IChatClient
                 }
                 return text;
             }
-            else
+            else if (_kind == CliKind.Codex)
             {
                 var text = ParseCodex(stdout);
                 _log.LogInformation(
                     "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars}",
                     _binary, _jobId ?? "(none)", wallClock.ElapsedMilliseconds, stdout.Length, text.Length);
+                return text;
+            }
+            else // Copilot
+            {
+                var text = ParseCopilotJsonl(stdout, out var outcome);
+                _log.LogInformation(
+                    "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} sessionId={SessionId} events={Events} isError={IsError}",
+                    _binary, _jobId ?? "(none)", wallClock.ElapsedMilliseconds, stdout.Length, text.Length,
+                    outcome.SessionId ?? "(none)", outcome.EventCount, outcome.IsError);
+                if (outcome.IsError)
+                {
+                    _log.LogWarning(
+                        "CLI {Binary} job {JobId} returned an error event (result={Snippet})",
+                        _binary, _jobId ?? "(none)", Truncate(text, 400));
+                }
                 return text;
             }
         }
@@ -543,6 +636,100 @@ public sealed class CliChatClient : IChatClient
         }
 
         return trimmed;
+    }
+
+    /// <summary>
+    /// Parses Copilot CLI's <c>--output-format json</c> output. Copilot emits JSONL — one JSON
+    /// object per line describing an event in the run. The final assistant answer, session id,
+    /// and error status are pulled from whichever events carry them, with a defensive
+    /// fall-back to the raw stdout if nothing matches.
+    ///
+    /// Field names checked here (<c>session_id</c>, <c>role</c>, <c>content</c>, <c>text</c>,
+    /// <c>result</c>, <c>error</c>) are the common event-log field names used by Copilot
+    /// and other Anthropic/OpenAI-shaped agent CLIs. If the shipped Copilot binary uses
+    /// different field names, add them to the extractor rather than rewriting the loop.
+    /// </summary>
+    private string ParseCopilotJsonl(string stdout, out CopilotOutcome outcome)
+    {
+        outcome = default;
+        var trimmed = stdout.Trim();
+        if (trimmed.Length == 0) return "(copilot returned no output)";
+
+        // A run that produced a single non-newline-terminated JSON object still parses cleanly.
+        var lines = trimmed.Split('\n');
+        var assistantText = new StringBuilder();
+        string? lastResult = null;
+
+        foreach (var raw in lines)
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] != '{') continue;
+            outcome.EventCount++;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
+                var root = doc.RootElement;
+
+                // Track session id whenever it appears — the final event or a dedicated
+                // session-open event both work.
+                var sid = TryReadString(root, "session_id") ?? TryReadString(root, "sessionId");
+                if (!string.IsNullOrWhiteSpace(sid)) outcome.SessionId = sid;
+
+                // Any event marked as an error surfaces that on the outcome so the caller
+                // can log a warning. The error text is used as the reply if no assistant
+                // message was produced.
+                if (root.TryGetProperty("error", out var errEl))
+                {
+                    outcome.IsError = true;
+                    var msg = errEl.ValueKind == JsonValueKind.String ? errEl.GetString() : errEl.GetRawText();
+                    if (!string.IsNullOrEmpty(msg)) lastResult = "Error from copilot: " + msg;
+                }
+                if (TryReadBool(root, "is_error") == true) outcome.IsError = true;
+
+                // Collect the model's textual reply. Copilot's assistant messages typically
+                // arrive as {type:"message", role:"assistant", content:"…"} or the equivalent
+                // "text" / "result" variants. Concatenate every assistant chunk we see so
+                // multi-message runs don't lose intermediate text.
+                var role = TryReadString(root, "role");
+                var isAssistant = string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase);
+                if (isAssistant || TryReadString(root, "type") is "message" or "assistant" or "text")
+                {
+                    var content = TryReadString(root, "content") ?? TryReadString(root, "text");
+                    if (!string.IsNullOrEmpty(content))
+                    {
+                        if (assistantText.Length > 0) assistantText.Append('\n');
+                        assistantText.Append(content);
+                    }
+                }
+
+                // A dedicated 'result' event, when present, takes precedence over accumulated
+                // assistant deltas — Copilot uses it to convey the canonical final answer.
+                var result = TryReadString(root, "result");
+                if (!string.IsNullOrEmpty(result)) lastResult = result;
+            }
+            catch (JsonException)
+            {
+                // A non-JSON line inside the stream is unexpected but non-fatal — skip it,
+                // keep parsing the rest, and fall back to raw stdout only if we found nothing.
+                continue;
+            }
+        }
+
+        if (_jobId is not null && !string.IsNullOrWhiteSpace(outcome.SessionId))
+            _sessions.Set(_jobId, _sessionKey, _cwd, outcome.SessionId!);
+
+        if (!string.IsNullOrEmpty(lastResult)) return lastResult!;
+        if (assistantText.Length > 0) return assistantText.ToString();
+        // Nothing structured landed — hand back the raw text so at least a diagnostic surface.
+        return trimmed;
+    }
+
+    private struct CopilotOutcome
+    {
+        public string? SessionId;
+        public bool IsError;
+        public int EventCount;
     }
 
     private static string FormatArgsForLog(System.Collections.ObjectModel.Collection<string> args)

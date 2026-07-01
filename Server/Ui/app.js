@@ -563,7 +563,7 @@ function renderEndpointForm(e, isNew = false) {
   const idF = field("Id", { value: e.id || "", placeholder: "stable-slug", required: true });
   if (!isNew) idF.inp.disabled = true;
   const nameF = field("Display name", { value: e.displayName || "", placeholder: "Local LM Studio" });
-  const provF = sel("Provider", ["OpenAI", "Anthropic", "Ollama", "ClaudeCli", "CodexCli"], e.provider || "OpenAI");
+  const provF = sel("Provider", ["OpenAI", "Anthropic", "Ollama", "ClaudeCli", "CodexCli", "CopilotCli"], e.provider || "OpenAI");
   const urlF = field("Base URL", { value: e.baseUrl || "", placeholder: "(provider default; ignored for CLI providers)" });
   const keyF = field("API key (leave blank to keep existing)", { type: "password", value: "", placeholder: e.hasApiKey ? "(masked: " + e.apiKeyMasked + ")" : "(ignored for CLI providers — uses local CLI auth)" });
   const modelF = field("Default model", { value: e.defaultModel || "", placeholder: "e.g. claude-opus-4-7 (CLI: passed via --model)" });
@@ -580,6 +580,19 @@ function renderEndpointForm(e, isNew = false) {
   claudeSkipF.inp.checked = !!e.claudeDangerouslySkipPermissions;
   const codexSandboxF = sel("Codex sandbox", ["", "read-only", "workspace-write", "danger-full-access"], e.codexSandbox || "");
   const codexApprovalF = sel("Codex ask-for-approval", ["", "untrusted", "on-failure", "on-request", "never"], e.codexAskForApproval || "");
+  const copilotAllowAllToolsF = field("Copilot --allow-all-tools", { type: "checkbox" });
+  copilotAllowAllToolsF.inp.checked = !!e.copilotAllowAllTools;
+  const copilotAllowAllPathsF = field("Copilot --allow-all-paths", { type: "checkbox" });
+  copilotAllowAllPathsF.inp.checked = !!e.copilotAllowAllPaths;
+  const copilotAllowAllUrlsF = field("Copilot --allow-all-urls", { type: "checkbox" });
+  copilotAllowAllUrlsF.inp.checked = !!e.copilotAllowAllUrls;
+  const copilotNoAskUserF = field("Copilot --no-ask-user", { type: "checkbox" });
+  copilotNoAskUserF.inp.checked = !!e.copilotNoAskUser;
+  const copilotAutopilotF = field("Copilot --autopilot", { type: "checkbox" });
+  copilotAutopilotF.inp.checked = !!e.copilotAutopilot;
+  const copilotMaxContF = field("Copilot --max-autopilot-continues (0 = leave unset)", { type: "number", value: e.copilotMaxAutopilotContinues ?? 0 });
+  const copilotAllowedToolsF = field("Copilot --allow-tool patterns (space/comma-separated)", { value: (e.copilotAllowedTools || []).join(" ") });
+  const copilotDeniedToolsF = field("Copilot --deny-tool patterns (space/comma-separated)", { value: (e.copilotDeniedTools || []).join(" ") });
 
   const claudeBlock = el("div", { class: "endpoint-cli-block" },
     el("div", { class: "endpoint-cli-heading text-muted small" }, "Claude CLI permission flags"),
@@ -590,11 +603,22 @@ function renderEndpointForm(e, isNew = false) {
     el("div", { class: "endpoint-cli-heading text-muted small" }, "Codex CLI permission flags"),
     codexSandboxF.wrap,
     codexApprovalF.wrap);
+  const copilotBlock = el("div", { class: "endpoint-cli-block" },
+    el("div", { class: "endpoint-cli-heading text-muted small" }, "GitHub Copilot CLI permission flags"),
+    copilotAllowAllToolsF.wrap,
+    copilotAllowAllPathsF.wrap,
+    copilotAllowAllUrlsF.wrap,
+    copilotNoAskUserF.wrap,
+    copilotAutopilotF.wrap,
+    copilotMaxContF.wrap,
+    copilotAllowedToolsF.wrap,
+    copilotDeniedToolsF.wrap);
 
   const syncProviderVisibility = () => {
     const p = (provF.inp.value || "").toLowerCase();
     claudeBlock.style.display = p === "claudecli" ? "" : "none";
     codexBlock.style.display = p === "codexcli" ? "" : "none";
+    copilotBlock.style.display = p === "copilotcli" ? "" : "none";
   };
   provF.inp.addEventListener("change", syncProviderVisibility);
 
@@ -606,6 +630,7 @@ function renderEndpointForm(e, isNew = false) {
   form.appendChild(enF.wrap);
   form.appendChild(claudeBlock);
   form.appendChild(codexBlock);
+  form.appendChild(copilotBlock);
   syncProviderVisibility();
 
   const saveBtn = el("button", { type: "submit", class: "btn btn-sm btn-primary" }, isNew ? "Create" : "Save");
@@ -617,10 +642,7 @@ function renderEndpointForm(e, isNew = false) {
   });
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const allowedToolsRaw = claudeAllowedToolsF.inp.value.trim();
-    const allowedTools = allowedToolsRaw
-      ? allowedToolsRaw.split(/[\s,]+/).filter(Boolean)
-      : [];
+    const splitList = (raw) => raw.trim() ? raw.trim().split(/[\s,]+/).filter(Boolean) : [];
     const body = {
       id: idF.inp.value.trim(),
       displayName: nameF.inp.value,
@@ -630,10 +652,18 @@ function renderEndpointForm(e, isNew = false) {
       requestTimeoutSeconds: Number(toF.inp.value) || 600,
       enabled: enF.inp.checked,
       claudePermissionMode: claudePermModeF.inp.value,
-      claudeAllowedTools: allowedTools,
+      claudeAllowedTools: splitList(claudeAllowedToolsF.inp.value),
       claudeDangerouslySkipPermissions: claudeSkipF.inp.checked,
       codexSandbox: codexSandboxF.inp.value,
       codexAskForApproval: codexApprovalF.inp.value,
+      copilotAllowAllTools: copilotAllowAllToolsF.inp.checked,
+      copilotAllowAllPaths: copilotAllowAllPathsF.inp.checked,
+      copilotAllowAllUrls: copilotAllowAllUrlsF.inp.checked,
+      copilotNoAskUser: copilotNoAskUserF.inp.checked,
+      copilotAutopilot: copilotAutopilotF.inp.checked,
+      copilotMaxAutopilotContinues: Number(copilotMaxContF.inp.value) || 0,
+      copilotAllowedTools: splitList(copilotAllowedToolsF.inp.value),
+      copilotDeniedTools: splitList(copilotDeniedToolsF.inp.value),
     };
     if (keyF.inp.value !== "") body.apiKey = keyF.inp.value;
     try {
@@ -1265,11 +1295,13 @@ function renderSettingsForm() {
   f.appendChild(numField("set-mtrc", "Max tool result chars", "maxToolResultChars",
     "Tool results larger than this get stashed; the agent reads slices via read_tool_result. 0 disables."));
   f.appendChild(boolField("set-cli", "Allow CLI delegation", "allowCliDelegation",
-    "Expose delegate_to_claude / delegate_to_codex tools — agent can shell out to external CLI agents."));
+    "Expose delegate_to_claude / delegate_to_codex / delegate_to_copilot tools — agent can shell out to external CLI agents."));
   f.appendChild(textField("set-claude-path", "Claude CLI path", "claudeCliPath",
     "Absolute path to the claude executable. Leave blank to resolve via PATH."));
   f.appendChild(textField("set-codex-path", "Codex CLI path", "codexCliPath",
     "Absolute path to the codex executable. Leave blank to resolve via PATH."));
+  f.appendChild(textField("set-copilot-path", "Copilot CLI path", "copilotCliPath",
+    "Absolute path to the GitHub Copilot CLI executable (e.g. %ProgramFiles%\\GitHub Copilot CLI\\copilot.exe). Leave blank to resolve via PATH."));
 }
 
 async function loadPlan() {

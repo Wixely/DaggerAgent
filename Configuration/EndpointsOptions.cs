@@ -32,8 +32,8 @@ public sealed class EndpointConfig
     /// <summary>
     /// Wire protocol: <c>OpenAI</c> (OpenAI Chat Completions / LM Studio / vLLM / OpenRouter /
     /// OpenWebUI / etc.), <c>Anthropic</c> (native Messages API), <c>Ollama</c>, or one of the
-    /// local-CLI shims <c>ClaudeCli</c> / <c>CodexCli</c> (each turn shells out to the
-    /// installed CLI and reuses its existing auth — no API key needed).
+    /// local-CLI shims <c>ClaudeCli</c> / <c>CodexCli</c> / <c>CopilotCli</c> (each turn shells
+    /// out to the installed CLI and reuses its existing auth — no API key needed).
     /// </summary>
     public string Provider { get; set; } = "OpenAI";
 
@@ -91,4 +91,61 @@ public sealed class EndpointConfig
     /// Use <c>never</c> for unattended runs.
     /// </summary>
     public string CodexAskForApproval { get; set; } = "";
+
+    // ── CopilotCli-specific knobs (ignored for other providers) ────────────────────────────────
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--allow-all-tools</c>. Master "no permission prompts" switch —
+    /// every tool auto-approves without confirmation. Suitable for unattended trigger endpoints.
+    /// Default false.
+    /// </summary>
+    public bool CopilotAllowAllTools { get; set; }
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--allow-all-paths</c>. Disables Copilot's file-path
+    /// verification so the spawned agent can access any path (not just the working
+    /// directory / <c>--add-dir</c> allow-list). Default false.
+    /// </summary>
+    public bool CopilotAllowAllPaths { get; set; }
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--allow-all-urls</c>. Allows the spawned agent to access
+    /// any URL without confirmation. Default false.
+    /// </summary>
+    public bool CopilotAllowAllUrls { get; set; }
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--autopilot</c>. Lets the agent keep working autonomously
+    /// across multiple continues without pausing for a human. Pair with
+    /// <see cref="CopilotMaxAutopilotContinues"/> to cap runaway loops. Default false.
+    /// </summary>
+    public bool CopilotAutopilot { get; set; }
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--max-autopilot-continues</c>. Cap on autonomous
+    /// continue-iterations when <see cref="CopilotAutopilot"/> is on. 0 = don't emit
+    /// the flag (Copilot's own default applies).
+    /// </summary>
+    public int CopilotMaxAutopilotContinues { get; set; }
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--allow-tool</c>. Each entry is a tool name / pattern that
+    /// auto-approves without prompting. Additive to <see cref="CopilotAllowAllTools"/> (which
+    /// is broader). Empty list = no flag.
+    /// </summary>
+    public List<string> CopilotAllowedTools { get; set; } = new();
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--deny-tool</c>. Each entry is a tool name / pattern that is
+    /// blocked outright — takes precedence over allow lists. Use for defence-in-depth even
+    /// when <see cref="CopilotAllowAllTools"/> is on. Empty list = no flag.
+    /// </summary>
+    public List<string> CopilotDeniedTools { get; set; } = new();
+
+    /// <summary>
+    /// Maps to Copilot CLI's <c>--no-ask-user</c>. Disables the <c>ask_user</c> tool so the
+    /// spawned agent can't stall waiting for interactive input. Recommended for unattended
+    /// trigger endpoints alongside <see cref="CopilotAllowAllTools"/>. Default false.
+    /// </summary>
+    public bool CopilotNoAskUser { get; set; }
 }

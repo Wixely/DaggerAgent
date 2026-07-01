@@ -98,6 +98,14 @@ public sealed class ToolsOptions
     public string CodexCliPath { get; set; } = "";
 
     /// <summary>
+    /// Absolute path to the GitHub Copilot CLI executable. Optional — when empty (the default)
+    /// the binary name <c>copilot</c> is resolved via the process PATH. The MSI installer on
+    /// Windows drops it under <c>%ProgramFiles%\GitHub Copilot CLI\copilot.exe</c>; pin it here
+    /// if it's not on PATH.
+    /// </summary>
+    public string CopilotCliPath { get; set; } = "";
+
+    /// <summary>
     /// Any tool result whose string output exceeds this many UTF-16 characters is offloaded:
     /// the full payload is held in <c>ToolResultStore</c>, and the model receives a short
     /// placeholder pointing at <c>read_tool_result</c> / <c>grep_tool_result</c> / etc. instead.

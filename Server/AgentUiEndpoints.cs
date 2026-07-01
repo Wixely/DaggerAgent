@@ -84,6 +84,24 @@ public static class AgentUiEndpoints
             if (patch.ClaudeDangerouslySkipPermissions is bool skip) existing.ClaudeDangerouslySkipPermissions = skip;
             if (patch.CodexSandbox is not null) existing.CodexSandbox = patch.CodexSandbox;
             if (patch.CodexAskForApproval is not null) existing.CodexAskForApproval = patch.CodexAskForApproval;
+            if (patch.CopilotAllowAllTools is bool cpAllowAll) existing.CopilotAllowAllTools = cpAllowAll;
+            if (patch.CopilotAllowAllPaths is bool cpAllowPaths) existing.CopilotAllowAllPaths = cpAllowPaths;
+            if (patch.CopilotAllowAllUrls is bool cpAllowUrls) existing.CopilotAllowAllUrls = cpAllowUrls;
+            if (patch.CopilotAutopilot is bool cpAuto) existing.CopilotAutopilot = cpAuto;
+            if (patch.CopilotMaxAutopilotContinues is int cpMax) existing.CopilotMaxAutopilotContinues = cpMax;
+            if (patch.CopilotNoAskUser is bool cpNoAsk) existing.CopilotNoAskUser = cpNoAsk;
+            if (patch.CopilotAllowedTools is not null)
+            {
+                existing.CopilotAllowedTools.Clear();
+                foreach (var s in patch.CopilotAllowedTools.Where(x => !string.IsNullOrWhiteSpace(x)))
+                    existing.CopilotAllowedTools.Add(s.Trim());
+            }
+            if (patch.CopilotDeniedTools is not null)
+            {
+                existing.CopilotDeniedTools.Clear();
+                foreach (var s in patch.CopilotDeniedTools.Where(x => !string.IsNullOrWhiteSpace(x)))
+                    existing.CopilotDeniedTools.Add(s.Trim());
+            }
 
             await store.SaveAsync(ct).ConfigureAwait(false);
             return Results.Json(ToEndpointView(existing), JsonOpts.Default);
@@ -368,7 +386,7 @@ public static class AgentUiEndpoints
                 v.WorkingDirectory, v.AllowAnyPath, v.ReadOnly, v.AllowWrite, v.WritePreview,
                 v.AllowShell, v.MaxFileBytes, v.MaxResults, v.ShellTimeoutSeconds,
                 v.GranularTools, v.ForcePlan, v.ReadFileSummaryThresholdBytes, v.MaxToolResultChars,
-                v.AllowCliDelegation, v.ClaudeCliPath, v.CodexCliPath), JsonOpts.Default);
+                v.AllowCliDelegation, v.ClaudeCliPath, v.CodexCliPath, v.CopilotCliPath), JsonOpts.Default);
         });
 
         // Mutates the singleton IOptions<ToolsOptions> instance in place. Every code path
@@ -402,6 +420,7 @@ public static class AgentUiEndpoints
             if (patch.AllowCliDelegation is bool acd) v.AllowCliDelegation = acd;
             if (patch.ClaudeCliPath is not null) v.ClaudeCliPath = patch.ClaudeCliPath;
             if (patch.CodexCliPath is not null) v.CodexCliPath = patch.CodexCliPath;
+            if (patch.CopilotCliPath is not null) v.CopilotCliPath = patch.CopilotCliPath;
             // Only persist when cwd actually changed — the rest of ToolsOptions stays
             // session-scoped (intentional: a hot toggle like AllowShell shouldn't outlive
             // the current run). Sticky cwd survives restart so successive turns against
@@ -415,7 +434,7 @@ public static class AgentUiEndpoints
                 v.WorkingDirectory, v.AllowAnyPath, v.ReadOnly, v.AllowWrite, v.WritePreview,
                 v.AllowShell, v.MaxFileBytes, v.MaxResults, v.ShellTimeoutSeconds,
                 v.GranularTools, v.ForcePlan, v.ReadFileSummaryThresholdBytes, v.MaxToolResultChars,
-                v.AllowCliDelegation, v.ClaudeCliPath, v.CodexCliPath), JsonOpts.Default);
+                v.AllowCliDelegation, v.ClaudeCliPath, v.CodexCliPath, v.CopilotCliPath), JsonOpts.Default);
         });
 
         // ──────────────────────────── pending writes ────────────────────────────
@@ -584,6 +603,14 @@ public static class AgentUiEndpoints
         claudeDangerouslySkipPermissions = e.ClaudeDangerouslySkipPermissions,
         codexSandbox = e.CodexSandbox,
         codexAskForApproval = e.CodexAskForApproval,
+        copilotAllowAllTools = e.CopilotAllowAllTools,
+        copilotAllowAllPaths = e.CopilotAllowAllPaths,
+        copilotAllowAllUrls = e.CopilotAllowAllUrls,
+        copilotAutopilot = e.CopilotAutopilot,
+        copilotMaxAutopilotContinues = e.CopilotMaxAutopilotContinues,
+        copilotNoAskUser = e.CopilotNoAskUser,
+        copilotAllowedTools = e.CopilotAllowedTools,
+        copilotDeniedTools = e.CopilotDeniedTools,
     };
 
     private static object ToTriggerSourceView(TriggerSource s) => new
@@ -640,13 +667,21 @@ internal sealed record EndpointPatch(
     string? DefaultModel = null,
     int? RequestTimeoutSeconds = null,
     bool? Enabled = null,
-    // CLI-flavour fields — only meaningful when Provider=ClaudeCli / CodexCli; round-tripped
-    // verbatim otherwise so a tab-flip in the UI doesn't lose configured values.
+    // CLI-flavour fields — only meaningful when Provider=ClaudeCli / CodexCli / CopilotCli;
+    // round-tripped verbatim otherwise so a tab-flip in the UI doesn't lose configured values.
     string? ClaudePermissionMode = null,
     IReadOnlyList<string>? ClaudeAllowedTools = null,
     bool? ClaudeDangerouslySkipPermissions = null,
     string? CodexSandbox = null,
-    string? CodexAskForApproval = null);
+    string? CodexAskForApproval = null,
+    bool? CopilotAllowAllTools = null,
+    bool? CopilotAllowAllPaths = null,
+    bool? CopilotAllowAllUrls = null,
+    bool? CopilotAutopilot = null,
+    int? CopilotMaxAutopilotContinues = null,
+    bool? CopilotNoAskUser = null,
+    IReadOnlyList<string>? CopilotAllowedTools = null,
+    IReadOnlyList<string>? CopilotDeniedTools = null);
 
 internal sealed record TriggerOptionsPatch(
     bool? Enabled = null,

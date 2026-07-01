@@ -138,6 +138,51 @@ public sealed class CliDelegationTools
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
+        async Task<string> DelegateToCopilot(
+            [Description("Task or question to delegate. Copilot won't see your history — be specific.")] string task,
+            [Description("Working directory override. Defaults to DaggerAgent's current working directory.")] string? workingDirectory = null,
+            [Description("Start a fresh Copilot session even if this job has a prior session id stashed. Default false.")] bool freshSession = false,
+            CancellationToken cancellationToken = default)
+        {
+            var cwd = ResolveCwd(workingDirectory);
+            var resumeSession = freshSession ? null : _sessions.Get(jobId, "copilot", cwd);
+            if (!freshSession && resumeSession is null)
+            {
+                var staleCwd = _sessions.GetStoredCwd(jobId, "copilot");
+                if (staleCwd is not null && !string.Equals(staleCwd, cwd, StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.LogInformation(
+                        "delegate_to_copilot job={JobId}: dropping resume session (was cwd={OldCwd}, now cwd={NewCwd}) — starting fresh",
+                        jobId, staleCwd, cwd);
+                    _sessions.Clear(jobId, "copilot");
+                }
+            }
+            return await RunCliAsync(
+                binary: ResolveCliBinary(_toolsOptions.CopilotCliPath, "copilot"),
+                buildArgs: cfgPath =>
+                {
+                    var list = new List<string>
+                    {
+                        "-p", task,
+                        "--output-format", "json",
+                        "--silent",
+                        "--additional-mcp-config", "@" + cfgPath,
+                    };
+                    if (!string.IsNullOrWhiteSpace(resumeSession))
+                    {
+                        list.Add("--session-id");
+                        list.Add(resumeSession);
+                    }
+                    return list;
+                },
+                buildConfig: CliMcpConfigBuilder.BuildCopilotConfig,
+                configFileName: "copilot-mcp.json",
+                envVarsOverride: tmpDir => new Dictionary<string, string> { ["COPILOT_HOME"] = tmpDir },
+                parseStdout: stdout => ParseCopilotJsonlAndStashSession(stdout, jobId, cwd),
+                workingDirectory: workingDirectory,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
         yield return AIFunctionFactory.Create(DelegateToClaude, name: "delegate_to_claude", description:
             "Delegate a task to the Claude Code CLI as a one-shot subprocess. Returns Claude's final " +
             "answer text. The delegated agent has a fresh context with no access to DaggerAgent's " +
@@ -150,6 +195,14 @@ public sealed class CliDelegationTools
             "conversation — pass enough detail in `task` to make it actionable. Stdio MCP servers configured " +
             "with PassthroughToCli=true are made available to Codex; HTTP servers are skipped (Codex CLI " +
             "config doesn't currently support HTTP MCP transport).");
+
+        yield return AIFunctionFactory.Create(DelegateToCopilot, name: "delegate_to_copilot", description:
+            "Delegate a task to the GitHub Copilot CLI as a one-shot subprocess. Returns Copilot's final " +
+            "answer text. The delegated agent has a fresh context with no access to DaggerAgent's " +
+            "conversation — pass enough detail in `task` to make it actionable. MCP servers configured " +
+            "with PassthroughToCli=true are made available to Copilot (both HTTP and stdio transports " +
+            "are supported, unlike Codex). Sessions are per-job + per-cwd — successive calls in the " +
+            "same working directory auto-resume; pass freshSession=true to start over.");
     }
 
     private static string ResolveCliBinary(string? configured, string fallbackName) =>
@@ -366,6 +419,88 @@ public sealed class CliDelegationTools
         catch (JsonException) { /* fall through to raw */ }
         return trimmed;
     }
+
+    /// <summary>
+    /// Parses Copilot CLI's <c>--output-format json</c> (JSONL) output. Each line is a JSON
+    /// object describing an event; the final assistant answer and session id are pulled from
+    /// whichever events carry them. Session id is stashed in the per-job store keyed by cwd so
+    /// a follow-up delegation auto-resumes; a trailing meta line surfaces the id + any cost
+    /// info back to the calling model.
+    /// </summary>
+    private string ParseCopilotJsonlAndStashSession(string stdout, string jobId, string cwd)
+    {
+        var trimmed = stdout.Trim();
+        if (trimmed.Length == 0) return "(copilot returned no output)";
+
+        var assistantText = new StringBuilder();
+        string? lastResult = null;
+        string? sessionId = null;
+        string? errorMsg = null;
+        int events = 0;
+
+        foreach (var raw in trimmed.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] != '{') continue;
+            events++;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
+                var root = doc.RootElement;
+
+                var sid = TryReadStringField(root, "session_id") ?? TryReadStringField(root, "sessionId");
+                if (!string.IsNullOrWhiteSpace(sid)) sessionId = sid;
+
+                if (root.TryGetProperty("error", out var errEl))
+                {
+                    var msg = errEl.ValueKind == JsonValueKind.String ? errEl.GetString() : errEl.GetRawText();
+                    if (!string.IsNullOrEmpty(msg)) errorMsg = msg;
+                }
+
+                var role = TryReadStringField(root, "role");
+                var type = TryReadStringField(root, "type");
+                var isAssistant = string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase)
+                    || type is "message" or "assistant" or "text";
+                if (isAssistant)
+                {
+                    var content = TryReadStringField(root, "content") ?? TryReadStringField(root, "text");
+                    if (!string.IsNullOrEmpty(content))
+                    {
+                        if (assistantText.Length > 0) assistantText.Append('\n');
+                        assistantText.Append(content);
+                    }
+                }
+
+                var result = TryReadStringField(root, "result");
+                if (!string.IsNullOrEmpty(result)) lastResult = result;
+            }
+            catch (JsonException) { /* skip malformed line */ }
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionId))
+            _sessions.Set(jobId, "copilot", cwd, sessionId!);
+
+        if (errorMsg is not null)
+        {
+            _log.LogWarning(
+                "delegate_to_copilot: Copilot returned an error event (sessionId={SessionId}, events={Events})",
+                sessionId ?? "(none)", events);
+            return "Error from copilot: " + errorMsg;
+        }
+
+        var body = lastResult ?? (assistantText.Length > 0 ? assistantText.ToString() : trimmed);
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            return body
+                + "\n\n[session_id=" + sessionId
+                + " — next call auto-resumes this session; pass freshSession=true to start over]";
+        }
+        return body;
+    }
+
+    private static string? TryReadStringField(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private string ParseCodexResultAndStashSession(string stdout, string jobId, string cwd)
     {

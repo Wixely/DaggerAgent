@@ -66,6 +66,7 @@ public sealed class ChatClientFactory
             // API key. The CLI runs autonomously per turn with its own tools.
             "claudecli" or "claude-cli" => CreateCliClient(CliChatClient.CliKind.Claude, endpoint, model, jobId),
             "codexcli" or "codex-cli" => CreateCliClient(CliChatClient.CliKind.Codex, endpoint, model, jobId),
+            "copilotcli" or "copilot-cli" => CreateCliClient(CliChatClient.CliKind.Copilot, endpoint, model, jobId),
             // OpenAI-compat path. Covers OpenAI itself, LM Studio, vLLM, OpenRouter, OpenWebUI,
             // and the Anthropic OpenAI-compat shim (just point BaseUrl at https://api.anthropic.com/v1/).
             _ => CreateOpenAiCompatibleClient(endpoint, model),
@@ -153,15 +154,27 @@ public sealed class ChatClientFactory
             ? _toolsOptions.WorkingDirectory
             : _launchInfo.OriginalWorkingDirectory;
         var timeout = TimeSpan.FromSeconds(Math.Max(1, endpoint.RequestTimeoutSeconds));
-        var binaryPath = kind == CliChatClient.CliKind.Claude
-            ? _toolsOptions.ClaudeCliPath
-            : _toolsOptions.CodexCliPath;
+        var binaryPath = kind switch
+        {
+            CliChatClient.CliKind.Claude => _toolsOptions.ClaudeCliPath,
+            CliChatClient.CliKind.Codex => _toolsOptions.CodexCliPath,
+            CliChatClient.CliKind.Copilot => _toolsOptions.CopilotCliPath,
+            _ => "",
+        };
         var permission = new CliChatClient.PermissionFlags(
             ClaudePermissionMode: endpoint.ClaudePermissionMode,
             ClaudeAllowedTools: endpoint.ClaudeAllowedTools,
             ClaudeDangerouslySkipPermissions: endpoint.ClaudeDangerouslySkipPermissions,
             CodexSandbox: endpoint.CodexSandbox,
-            CodexAskForApproval: endpoint.CodexAskForApproval);
+            CodexAskForApproval: endpoint.CodexAskForApproval,
+            CopilotAllowAllTools: endpoint.CopilotAllowAllTools,
+            CopilotAllowAllPaths: endpoint.CopilotAllowAllPaths,
+            CopilotAllowAllUrls: endpoint.CopilotAllowAllUrls,
+            CopilotAutopilot: endpoint.CopilotAutopilot,
+            CopilotMaxAutopilotContinues: endpoint.CopilotMaxAutopilotContinues,
+            CopilotAllowedTools: endpoint.CopilotAllowedTools,
+            CopilotDeniedTools: endpoint.CopilotDeniedTools,
+            CopilotNoAskUser: endpoint.CopilotNoAskUser);
         return new CliChatClient(
             kind: kind,
             model: string.IsNullOrWhiteSpace(model) ? null : model,

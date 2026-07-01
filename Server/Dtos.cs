@@ -73,7 +73,8 @@ public sealed record ToolsOptionsPatch(
     int? MaxToolResultChars = null,
     bool? AllowCliDelegation = null,
     string? ClaudeCliPath = null,
-    string? CodexCliPath = null);
+    string? CodexCliPath = null,
+    string? CopilotCliPath = null);
 
 /// <summary>Snapshot of the current ToolsOptions — what GET /agent/settings returns.</summary>
 public sealed record ToolsSettingsView(
@@ -92,7 +93,8 @@ public sealed record ToolsSettingsView(
     int MaxToolResultChars,
     bool AllowCliDelegation,
     string ClaudeCliPath,
-    string CodexCliPath);
+    string CodexCliPath,
+    string CopilotCliPath);
 
 /// <summary>Each row of GET /agent/pending-writes — a staged change with a rendered unified diff.</summary>
 public sealed record PendingWriteView(

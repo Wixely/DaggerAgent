@@ -57,6 +57,17 @@ internal static class CliMcpConfigBuilder
     }
 
     /// <summary>
+    /// GitHub Copilot CLI mcp config: same JSON shape as Claude — a top-level
+    /// <c>mcpServers</c> map keyed by server name with <c>{type:"http", url, headers?}</c> or
+    /// <c>{type:"stdio", command, args?, env?}</c> entries. Copilot accepts this either via
+    /// the persistent <c>~/.copilot/mcp-config.json</c> or per-invocation via
+    /// <c>--additional-mcp-config @&lt;path&gt;</c>. We use the latter so a per-call temp file
+    /// keeps the generated servers scoped to one run and cleans up on exit.
+    /// </summary>
+    public static string BuildCopilotConfig(IEnumerable<McpServerConfig> servers) =>
+        BuildClaudeConfig(servers);
+
+    /// <summary>
     /// Codex CLI config.toml: <c>[mcp_servers.&lt;name&gt;]</c> sections. As of writing, Codex's
     /// MCP support is stdio-only via its config file — HTTP servers are skipped with a comment
     /// so the file is still valid TOML and the user has a breadcrumb if a server is missing.
