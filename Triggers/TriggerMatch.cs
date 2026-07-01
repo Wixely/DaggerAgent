@@ -41,25 +41,31 @@ public sealed class TriggerMatch
     [JsonPropertyName("title")]         public string? Title { get; set; }
 
     /// <summary>
-    /// Stable per-source key for dedup. Pattern: <c>{providerPrefix}-{naturalId}[-{commentId}]@{UpdatedAt:O}</c>.
-    /// Provider is identified by which natural-id field is populated — Number (GitHub),
-    /// Iid (GitLab), Id (AzureDevOps). When a comment id is present the key includes it,
-    /// scoping dedup to the specific mention; otherwise the key is item-level so any
-    /// timestamp bump on the parent item re-fires (intentional for edited-then-re-mentioned
-    /// tickets, harmless for first-time matches).
+    /// Stable per-source key for dedup. Pattern: <c>{providerPrefix}-{naturalId}[-{commentId}]</c> —
+    /// deliberately NOT time-stamped. This is a last-seen-id high-water mark: an item-level
+    /// mention (in the ticket body/description) fires exactly once per item, and each distinct
+    /// comment/note carrying the phrase fires exactly once (keyed by its own id). Provider is
+    /// identified by which natural-id field is populated — Number (GitHub), Iid (GitLab),
+    /// Id (AzureDevOps).
+    ///
+    /// The earlier design appended <c>@{UpdatedAt:O}</c> so any timestamp bump re-fired. That
+    /// self-triggers: a job whose preamble says "update the ticket on start/end" bumps the item's
+    /// changed-date, which re-matched the still-present body mention and spawned a duplicate job
+    /// every poll — a runaway loop. An author-based "ignore self" guard can't fix it here either,
+    /// because the agent writes back through a PAT/ambient identity indistinguishable from the
+    /// human's. Tracking the comment id instead means the agent's own edits (which add no new
+    /// phrase-bearing comment) never re-fire, while a genuine follow-up "@phrase" comment — the
+    /// intended way to reopen work on a long-lived ticket — always does.
     /// </summary>
     public string MatchKey()
     {
-        string natural;
         if (Number is not null)
-            natural = CommentId is not null ? $"gh-comment-{Number}-{CommentId}" : $"gh-{Kind}-{Number}";
-        else if (Iid is not null)
-            natural = NoteId is not null ? $"gl-note-{Iid}-{NoteId}" : $"gl-{Kind}-{Iid}";
-        else if (Id is not null)
-            natural = CommentId is not null ? $"az-comment-{Id}-{CommentId}" : $"az-{Kind}-{Id}";
-        else
-            natural = Url;
-        return $"{natural}@{UpdatedAt:O}";
+            return CommentId is not null ? $"gh-comment-{Number}-{CommentId}" : $"gh-{Kind}-{Number}";
+        if (Iid is not null)
+            return NoteId is not null ? $"gl-note-{Iid}-{NoteId}" : $"gl-{Kind}-{Iid}";
+        if (Id is not null)
+            return CommentId is not null ? $"az-comment-{Id}-{CommentId}" : $"az-{Kind}-{Id}";
+        return Url;
     }
 
     /// <summary> Short human description for logs / job preambles. </summary>
