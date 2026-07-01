@@ -53,6 +53,37 @@ public sealed class McpClientHost : IHostedService, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Resolve a canonical, unprefixed tool suffix (e.g. <c>list_mentions_since</c>) to the actual
+    /// tool name a given server exposes, tolerating every prefixing scheme we've seen:
+    ///   • bare / legacy      — <c>list_mentions_since</c>
+    ///   • per-server prefix  — <c>azdo_list_mentions_since</c>, <c>gh_list_issues</c>
+    ///   • MCPHub proxy       — <c>azuredevops__azdo_list_mentions_since</c>, <c>github__gh_list_issues</c>
+    /// The deterministic poll layer (TriggerService) hardcodes canonical names, but the MCP servers
+    /// were re-prefixed for collision-avoidance and MCPHub adds a second <c>{server}__</c> layer, so a
+    /// literal name no longer matches. Exact name wins; otherwise the shortest tool ending in
+    /// <c>_{canonical}</c> (shortest avoids grabbing a longer sibling that merely shares the tail,
+    /// e.g. <c>list_pull_request_work_items</c> vs <c>query_work_items</c>). Null when the server
+    /// isn't connected or exposes no such tool.
+    /// </summary>
+    public string? ResolveToolName(string serverName, string canonical)
+    {
+        lock (_gate)
+        {
+            if (!_tools.TryGetValue(serverName, out var tools) || tools.Count == 0)
+                return null;
+            foreach (var t in tools)
+                if (string.Equals(t.Name, canonical, StringComparison.OrdinalIgnoreCase))
+                    return t.Name;
+            var suffix = "_" + canonical;
+            return tools
+                .Where(t => t.Name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(t => t.Name.Length)
+                .Select(t => t.Name)
+                .FirstOrDefault();
+        }
+    }
+
     public IReadOnlyList<McpServerConnectionInfo> ConnectionStatuses
     {
         get

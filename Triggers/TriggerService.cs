@@ -324,6 +324,27 @@ public sealed class TriggerService : BackgroundService
     private string EffectivePhrase(TriggerSource source) =>
         string.IsNullOrWhiteSpace(source.Filter) ? _options.Phrase : source.Filter;
 
+    /// <summary>
+    /// Resolve the wire name of a canonical poll tool (e.g. <c>list_mentions_since</c>) on this
+    /// source's MCP server. The servers now prefix their tools (<c>azdo_…</c>, <c>gh_…</c>) and the
+    /// MCPHub proxy adds a further <c>{server}__</c> layer, so the literal canonical name no longer
+    /// resolves — <see cref="McpClientHost.ResolveToolName"/> matches by suffix. Returns null (and
+    /// logs) when the server exposes no matching tool so the caller can skip the source cleanly.
+    /// </summary>
+    private string? ResolvePollTool(TriggerSource source, string canonical)
+    {
+        var name = _mcpHost.ResolveToolName(source.McpServer, canonical);
+        if (name is null)
+            _log.LogWarning(
+                "Trigger source {Source}: MCP server '{Server}' exposes no tool matching '*{Canonical}'. " +
+                "Is it connected and the right server? (tool-name prefix drift is the usual cause.)",
+                source.Id, source.McpServer, canonical);
+        else if (!string.Equals(name, canonical, StringComparison.Ordinal))
+            _log.LogDebug("Trigger source {Source}: resolved '{Canonical}' -> '{Actual}' on '{Server}'",
+                source.Id, canonical, name, source.McpServer);
+        return name;
+    }
+
     private async Task<IReadOnlyList<TriggerMatch>> FetchMentionsAsync(
         ModelContextProtocol.Client.McpClient client, TriggerSource source, DateTimeOffset? since, int budget, CancellationToken ct)
     {
@@ -346,10 +367,13 @@ public sealed class TriggerService : BackgroundService
         };
         AddScopeArg(args, source);
 
-        _log.LogDebug("Trigger source {Source}: calling list_mentions_since with sinceUtc={Since} kind={Kind}",
-            source.Id, sinceWire ?? "(null)", kind);
+        var toolName = ResolvePollTool(source, "list_mentions_since");
+        if (toolName is null) return Array.Empty<TriggerMatch>();
 
-        var envelope = await McpStructuredCall.CallAsync<TriggerMatchEnvelope>(client, "list_mentions_since", args, ct).ConfigureAwait(false);
+        _log.LogDebug("Trigger source {Source}: calling {Tool} with sinceUtc={Since} kind={Kind}",
+            source.Id, toolName, sinceWire ?? "(null)", kind);
+
+        var envelope = await McpStructuredCall.CallAsync<TriggerMatchEnvelope>(client, toolName, args, ct).ConfigureAwait(false);
         if (envelope is null) return Array.Empty<TriggerMatch>();
         if (!string.IsNullOrEmpty(envelope.Error))
         {
@@ -387,7 +411,9 @@ public sealed class TriggerService : BackgroundService
         if (source.Mode == TriggerMode.Assignee && !string.IsNullOrWhiteSpace(source.Filter))
             args["assignee"] = source.Filter;
 
-        var issues = await McpStructuredCall.CallAsync<List<GitHubIssueListItem>>(client, "list_issues", args, ct).ConfigureAwait(false);
+        var toolName = ResolvePollTool(source, "list_issues");
+        if (toolName is null) return Array.Empty<TriggerMatch>();
+        var issues = await McpStructuredCall.CallAsync<List<GitHubIssueListItem>>(client, toolName, args, ct).ConfigureAwait(false);
         if (issues is null) return Array.Empty<TriggerMatch>();
         var slug = source.Scope;
         return issues.Select(i => new TriggerMatch
@@ -417,7 +443,9 @@ public sealed class TriggerService : BackgroundService
         if (source.Mode == TriggerMode.Assignee && !string.IsNullOrWhiteSpace(source.Filter))
             args["assigneeUsername"] = source.Filter;
 
-        var issues = await McpStructuredCall.CallAsync<List<GitLabIssueListItem>>(client, "list_issues", args, ct).ConfigureAwait(false);
+        var toolName = ResolvePollTool(source, "list_issues");
+        if (toolName is null) return Array.Empty<TriggerMatch>();
+        var issues = await McpStructuredCall.CallAsync<List<GitLabIssueListItem>>(client, toolName, args, ct).ConfigureAwait(false);
         if (issues is null) return Array.Empty<TriggerMatch>();
         return issues.Select(i => new TriggerMatch
         {
@@ -461,7 +489,9 @@ public sealed class TriggerService : BackgroundService
         };
         if (!string.IsNullOrWhiteSpace(source.Scope)) args["project"] = source.Scope;
 
-        var items = await McpStructuredCall.CallAsync<List<AzdoWorkItem>>(client, "query_work_items", args, ct).ConfigureAwait(false);
+        var toolName = ResolvePollTool(source, "query_work_items");
+        if (toolName is null) return Array.Empty<TriggerMatch>();
+        var items = await McpStructuredCall.CallAsync<List<AzdoWorkItem>>(client, toolName, args, ct).ConfigureAwait(false);
         if (items is null) return Array.Empty<TriggerMatch>();
         return items.Select(w => new TriggerMatch
         {
