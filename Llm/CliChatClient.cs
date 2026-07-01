@@ -334,9 +334,10 @@ public sealed class CliChatClient : IChatClient
                 // servers (unlike Codex which is stdio-only), so nothing is skipped.
                 var configPath = Path.Combine(tempDir, "copilot-mcp.json");
                 await File.WriteAllTextAsync(configPath, CliMcpConfigBuilder.BuildCopilotConfig(passthrough), ct).ConfigureAwait(false);
-                // Isolate per-invocation state (skills cache, session index) so a
-                // multi-tenant DaggerAgent doesn't share auth or session ids across users.
-                psi.Environment["COPILOT_HOME"] = tempDir;
+                // Deliberately DO NOT override COPILOT_HOME: the subprocess must inherit the
+                // user's auth (~/.copilot/auth) and built-in skills. Pointing COPILOT_HOME at
+                // an empty temp dir isolates state, but the price is losing the /login token
+                // — every subprocess would fail with "No authentication information found."
                 psi.ArgumentList.Add("-p");
                 psi.ArgumentList.Add(prompt);
                 psi.ArgumentList.Add("--output-format");
@@ -514,14 +515,20 @@ public sealed class CliChatClient : IChatClient
             {
                 var text = ParseCopilotJsonl(stdout, out var outcome);
                 _log.LogInformation(
-                    "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} sessionId={SessionId} events={Events} isError={IsError}",
-                    _binary, _jobId ?? "(none)", wallClock.ElapsedMilliseconds, stdout.Length, text.Length,
-                    outcome.SessionId ?? "(none)", outcome.EventCount, outcome.IsError);
+                    "CLI endpoint done: binary={Binary} job={JobId} exit={CliExit} wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} sessionId={SessionId} events={Events} model={Model} outTok={OutTok} premiumReq={PremiumReq} apiMs={ApiMs} sessionMs={SessionMs}",
+                    _binary, _jobId ?? "(none)", outcome.ExitCode?.ToString() ?? "0",
+                    wallClock.ElapsedMilliseconds, stdout.Length, text.Length,
+                    outcome.SessionId ?? "(none)", outcome.EventCount,
+                    outcome.Model ?? "(none)",
+                    outcome.OutputTokens?.ToString() ?? "(none)",
+                    outcome.PremiumRequests?.ToString() ?? "(none)",
+                    outcome.TotalApiDurationMs?.ToString() ?? "(none)",
+                    outcome.SessionDurationMs?.ToString() ?? "(none)");
                 if (outcome.IsError)
                 {
                     _log.LogWarning(
-                        "CLI {Binary} job {JobId} returned an error event (result={Snippet})",
-                        _binary, _jobId ?? "(none)", Truncate(text, 400));
+                        "CLI {Binary} job {JobId} returned a non-zero result (exit={Exit}, result={Snippet})",
+                        _binary, _jobId ?? "(none)", outcome.ExitCode?.ToString() ?? "?", Truncate(text, 400));
                 }
                 return text;
             }
@@ -646,14 +653,17 @@ public sealed class CliChatClient : IChatClient
 
     /// <summary>
     /// Parses Copilot CLI's <c>--output-format json</c> output. Copilot emits JSONL — one JSON
-    /// object per line describing an event in the run. The final assistant answer, session id,
-    /// and error status are pulled from whichever events carry them, with a defensive
-    /// fall-back to the raw stdout if nothing matches.
+    /// object per line, each shaped as
+    /// <c>{ type, data: {…}, id, timestamp, parentId }</c>, EXCEPT <c>type:"result"</c> which
+    /// places its fields (<c>sessionId</c>, <c>exitCode</c>, <c>usage</c>) at the top level.
     ///
-    /// Field names checked here (<c>session_id</c>, <c>role</c>, <c>content</c>, <c>text</c>,
-    /// <c>result</c>, <c>error</c>) are the common event-log field names used by Copilot
-    /// and other Anthropic/OpenAI-shaped agent CLIs. If the shipped Copilot binary uses
-    /// different field names, add them to the extractor rather than rewriting the loop.
+    /// Event types we care about (schema verified against Copilot CLI 1.0.67):
+    /// <list type="bullet">
+    ///   <item><c>assistant.message</c> — canonical final assistant text at <c>data.content</c></item>
+    ///   <item><c>assistant.message_delta</c> — streamed fragment at <c>data.deltaContent</c></item>
+    ///   <item><c>result</c> — terminal event with <c>sessionId</c>, <c>exitCode</c>, <c>usage.*</c></item>
+    ///   <item><c>session.warning</c> — non-fatal notice with <c>data.warningType</c> / <c>data.message</c></item>
+    /// </list>
     /// </summary>
     private string ParseCopilotJsonl(string stdout, out CopilotOutcome outcome)
     {
@@ -661,73 +671,100 @@ public sealed class CliChatClient : IChatClient
         var trimmed = stdout.Trim();
         if (trimmed.Length == 0) return "(copilot returned no output)";
 
-        // A run that produced a single non-newline-terminated JSON object still parses cleanly.
-        var lines = trimmed.Split('\n');
-        var assistantText = new StringBuilder();
-        string? lastResult = null;
+        var assistantMessage = new StringBuilder();       // preferred — from assistant.message.data.content
+        var assistantDeltas = new StringBuilder();        // fallback — assembled from assistant.message_delta chunks
+        var warnings = new StringBuilder();               // surfaced when there's no assistant text
+        string? lastModel = null;
 
-        foreach (var raw in lines)
+        foreach (var raw in trimmed.Split('\n'))
         {
             var line = raw.Trim();
             if (line.Length == 0 || line[0] != '{') continue;
             outcome.EventCount++;
-            try
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(line); }
+            catch (JsonException) { continue; }
+            using (doc)
             {
-                using var doc = JsonDocument.Parse(line);
                 if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
                 var root = doc.RootElement;
+                var type = TryReadString(root, "type");
+                if (type is null) continue;
 
-                // Track session id whenever it appears — the final event or a dedicated
-                // session-open event both work.
-                var sid = TryReadString(root, "session_id") ?? TryReadString(root, "sessionId");
-                if (!string.IsNullOrWhiteSpace(sid)) outcome.SessionId = sid;
-
-                // Any event marked as an error surfaces that on the outcome so the caller
-                // can log a warning. The error text is used as the reply if no assistant
-                // message was produced.
-                if (root.TryGetProperty("error", out var errEl))
+                switch (type)
                 {
-                    outcome.IsError = true;
-                    var msg = errEl.ValueKind == JsonValueKind.String ? errEl.GetString() : errEl.GetRawText();
-                    if (!string.IsNullOrEmpty(msg)) lastResult = "Error from copilot: " + msg;
-                }
-                if (TryReadBool(root, "is_error") == true) outcome.IsError = true;
+                    case "result":
+                        // Terminal event — fields sit at the top level, not under `data`.
+                        outcome.SessionId = TryReadString(root, "sessionId") ?? outcome.SessionId;
+                        outcome.ExitCode = TryReadInt(root, "exitCode");
+                        if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                        {
+                            outcome.PremiumRequests = TryReadInt(usage, "premiumRequests");
+                            outcome.TotalApiDurationMs = TryReadLong(usage, "totalApiDurationMs");
+                            outcome.SessionDurationMs = TryReadLong(usage, "sessionDurationMs");
+                        }
+                        if (outcome.ExitCode is int ec && ec != 0) outcome.IsError = true;
+                        break;
 
-                // Collect the model's textual reply. Copilot's assistant messages typically
-                // arrive as {type:"message", role:"assistant", content:"…"} or the equivalent
-                // "text" / "result" variants. Concatenate every assistant chunk we see so
-                // multi-message runs don't lose intermediate text.
-                var role = TryReadString(root, "role");
-                var isAssistant = string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase);
-                if (isAssistant || TryReadString(root, "type") is "message" or "assistant" or "text")
-                {
-                    var content = TryReadString(root, "content") ?? TryReadString(root, "text");
-                    if (!string.IsNullOrEmpty(content))
-                    {
-                        if (assistantText.Length > 0) assistantText.Append('\n');
-                        assistantText.Append(content);
-                    }
-                }
+                    case "assistant.message":
+                        // Canonical final text of one assistant turn.
+                        if (root.TryGetProperty("data", out var msgData) && msgData.ValueKind == JsonValueKind.Object)
+                        {
+                            var content = TryReadString(msgData, "content");
+                            if (!string.IsNullOrEmpty(content))
+                            {
+                                if (assistantMessage.Length > 0) assistantMessage.Append('\n');
+                                assistantMessage.Append(content);
+                            }
+                            lastModel = TryReadString(msgData, "model") ?? lastModel;
+                            outcome.OutputTokens = TryReadLong(msgData, "outputTokens") ?? outcome.OutputTokens;
+                        }
+                        break;
 
-                // A dedicated 'result' event, when present, takes precedence over accumulated
-                // assistant deltas — Copilot uses it to convey the canonical final answer.
-                var result = TryReadString(root, "result");
-                if (!string.IsNullOrEmpty(result)) lastResult = result;
-            }
-            catch (JsonException)
-            {
-                // A non-JSON line inside the stream is unexpected but non-fatal — skip it,
-                // keep parsing the rest, and fall back to raw stdout only if we found nothing.
-                continue;
+                    case "assistant.message_delta":
+                        // Streaming fragment — used as a fallback if no assistant.message lands
+                        // (which would be unusual, but the delta stream carries the same text).
+                        if (root.TryGetProperty("data", out var deltaData) && deltaData.ValueKind == JsonValueKind.Object)
+                        {
+                            var delta = TryReadString(deltaData, "deltaContent");
+                            if (!string.IsNullOrEmpty(delta)) assistantDeltas.Append(delta);
+                        }
+                        break;
+
+                    case "session.warning":
+                        // Non-fatal — logged and surfaced when there's no assistant text at all.
+                        if (root.TryGetProperty("data", out var warnData) && warnData.ValueKind == JsonValueKind.Object)
+                        {
+                            var msg = TryReadString(warnData, "message");
+                            if (!string.IsNullOrEmpty(msg))
+                            {
+                                if (warnings.Length > 0) warnings.AppendLine();
+                                warnings.Append("[copilot warning] ").Append(msg);
+                            }
+                        }
+                        break;
+                }
             }
         }
+
+        outcome.Model = lastModel;
+
+        // Copilot's session.warning events carry policy/config notices (e.g. "third-party MCP
+        // servers disabled by org policy" — meaning our --additional-mcp-config is silently
+        // ignored). Log those even when assistant text landed, otherwise the caller has no
+        // signal that a passthrough server didn't actually make it to the CLI.
+        if (warnings.Length > 0)
+            _log.LogWarning("CLI {Binary} job {JobId} session warnings: {Warnings}",
+                _binary, _jobId ?? "(none)", warnings.ToString());
 
         if (_jobId is not null && !string.IsNullOrWhiteSpace(outcome.SessionId))
             _sessions.Set(_jobId, _sessionKey, _cwd, outcome.SessionId!);
 
-        if (!string.IsNullOrEmpty(lastResult)) return lastResult!;
-        if (assistantText.Length > 0) return assistantText.ToString();
-        // Nothing structured landed — hand back the raw text so at least a diagnostic surface.
+        // Prefer the fully-formed assistant.message content; fall back to concatenated deltas
+        // if the run somehow didn't emit a final message event; then to warnings-only; then raw.
+        if (assistantMessage.Length > 0) return assistantMessage.ToString();
+        if (assistantDeltas.Length > 0) return assistantDeltas.ToString();
+        if (warnings.Length > 0) return warnings.ToString();
         return trimmed;
     }
 
@@ -736,6 +773,12 @@ public sealed class CliChatClient : IChatClient
         public string? SessionId;
         public bool IsError;
         public int EventCount;
+        public int? ExitCode;
+        public int? PremiumRequests;
+        public long? TotalApiDurationMs;
+        public long? SessionDurationMs;
+        public long? OutputTokens;
+        public string? Model;
     }
 
     private static string FormatArgsForLog(System.Collections.ObjectModel.Collection<string> args)

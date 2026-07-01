@@ -183,7 +183,9 @@ public sealed class CliDelegationTools
                 },
                 buildConfig: CliMcpConfigBuilder.BuildCopilotConfig,
                 configFileName: "copilot-mcp.json",
-                envVarsOverride: tmpDir => new Dictionary<string, string> { ["COPILOT_HOME"] = tmpDir },
+                // No COPILOT_HOME override: the subprocess must inherit the user's auth from
+                // ~/.copilot/auth. See CliChatClient's Copilot branch for the same rationale.
+                envVarsOverride: null,
                 parseStdout: stdout => ParseCopilotJsonlAndStashSession(stdout, jobId, cwd),
                 workingDirectory: workingDirectory,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -427,21 +429,24 @@ public sealed class CliDelegationTools
     }
 
     /// <summary>
-    /// Parses Copilot CLI's <c>--output-format json</c> (JSONL) output. Each line is a JSON
-    /// object describing an event; the final assistant answer and session id are pulled from
-    /// whichever events carry them. Session id is stashed in the per-job store keyed by cwd so
-    /// a follow-up delegation auto-resumes; a trailing meta line surfaces the id + any cost
-    /// info back to the calling model.
+    /// Parses Copilot CLI's <c>--output-format json</c> (JSONL) output. Schema verified against
+    /// Copilot CLI 1.0.67 — each event is <c>{ type, data: {…}, id, timestamp, parentId }</c>
+    /// except the terminal <c>type:"result"</c> event which puts <c>sessionId</c>, <c>exitCode</c>
+    /// and <c>usage</c> at the top level. See <see cref="CliChatClient"/>.ParseCopilotJsonl for
+    /// the mirror implementation on the endpoint path — keep the two in sync when the schema
+    /// changes.
     /// </summary>
     private string ParseCopilotJsonlAndStashSession(string stdout, string jobId, string cwd)
     {
         var trimmed = stdout.Trim();
         if (trimmed.Length == 0) return "(copilot returned no output)";
 
-        var assistantText = new StringBuilder();
-        string? lastResult = null;
+        var assistantMessage = new StringBuilder();
+        var assistantDeltas = new StringBuilder();
+        var warnings = new StringBuilder();
         string? sessionId = null;
-        string? errorMsg = null;
+        int? exitCode = null;
+        int? premiumRequests = null;
         int events = 0;
 
         foreach (var raw in trimmed.Split('\n'))
@@ -449,60 +454,94 @@ public sealed class CliDelegationTools
             var line = raw.Trim();
             if (line.Length == 0 || line[0] != '{') continue;
             events++;
-            try
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(line); }
+            catch (JsonException) { continue; }
+            using (doc)
             {
-                using var doc = JsonDocument.Parse(line);
                 if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
                 var root = doc.RootElement;
-
-                var sid = TryReadStringField(root, "session_id") ?? TryReadStringField(root, "sessionId");
-                if (!string.IsNullOrWhiteSpace(sid)) sessionId = sid;
-
-                if (root.TryGetProperty("error", out var errEl))
-                {
-                    var msg = errEl.ValueKind == JsonValueKind.String ? errEl.GetString() : errEl.GetRawText();
-                    if (!string.IsNullOrEmpty(msg)) errorMsg = msg;
-                }
-
-                var role = TryReadStringField(root, "role");
                 var type = TryReadStringField(root, "type");
-                var isAssistant = string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase)
-                    || type is "message" or "assistant" or "text";
-                if (isAssistant)
-                {
-                    var content = TryReadStringField(root, "content") ?? TryReadStringField(root, "text");
-                    if (!string.IsNullOrEmpty(content))
-                    {
-                        if (assistantText.Length > 0) assistantText.Append('\n');
-                        assistantText.Append(content);
-                    }
-                }
+                if (type is null) continue;
 
-                var result = TryReadStringField(root, "result");
-                if (!string.IsNullOrEmpty(result)) lastResult = result;
+                switch (type)
+                {
+                    case "result":
+                        sessionId = TryReadStringField(root, "sessionId") ?? sessionId;
+                        if (root.TryGetProperty("exitCode", out var ecEl) && ecEl.ValueKind == JsonValueKind.Number && ecEl.TryGetInt32(out var ec))
+                            exitCode = ec;
+                        if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object
+                            && usage.TryGetProperty("premiumRequests", out var pr) && pr.ValueKind == JsonValueKind.Number && pr.TryGetInt32(out var prv))
+                            premiumRequests = prv;
+                        break;
+
+                    case "assistant.message":
+                        if (root.TryGetProperty("data", out var msgData) && msgData.ValueKind == JsonValueKind.Object)
+                        {
+                            var content = TryReadStringField(msgData, "content");
+                            if (!string.IsNullOrEmpty(content))
+                            {
+                                if (assistantMessage.Length > 0) assistantMessage.Append('\n');
+                                assistantMessage.Append(content);
+                            }
+                        }
+                        break;
+
+                    case "assistant.message_delta":
+                        if (root.TryGetProperty("data", out var deltaData) && deltaData.ValueKind == JsonValueKind.Object)
+                        {
+                            var delta = TryReadStringField(deltaData, "deltaContent");
+                            if (!string.IsNullOrEmpty(delta)) assistantDeltas.Append(delta);
+                        }
+                        break;
+
+                    case "session.warning":
+                        if (root.TryGetProperty("data", out var warnData) && warnData.ValueKind == JsonValueKind.Object)
+                        {
+                            var msg = TryReadStringField(warnData, "message");
+                            if (!string.IsNullOrEmpty(msg))
+                            {
+                                if (warnings.Length > 0) warnings.AppendLine();
+                                warnings.Append("[copilot warning] ").Append(msg);
+                            }
+                        }
+                        break;
+                }
             }
-            catch (JsonException) { /* skip malformed line */ }
         }
 
         if (!string.IsNullOrWhiteSpace(sessionId))
             _sessions.Set(jobId, "copilot", cwd, sessionId!);
 
-        if (errorMsg is not null)
+        if (warnings.Length > 0)
+            _log.LogWarning("delegate_to_copilot session warnings (sessionId={SessionId}): {Warnings}",
+                sessionId ?? "(none)", warnings.ToString());
+
+        // Prefer the canonical assistant.message content, then streamed deltas, then warnings.
+        string body;
+        if (assistantMessage.Length > 0) body = assistantMessage.ToString();
+        else if (assistantDeltas.Length > 0) body = assistantDeltas.ToString();
+        else if (warnings.Length > 0) body = warnings.ToString();
+        else body = trimmed;
+
+        if (exitCode is int ec2 && ec2 != 0)
         {
             _log.LogWarning(
-                "delegate_to_copilot: Copilot returned an error event (sessionId={SessionId}, events={Events})",
-                sessionId ?? "(none)", events);
-            return "Error from copilot: " + errorMsg;
+                "delegate_to_copilot: Copilot exited with code {ExitCode} (sessionId={SessionId}, events={Events})",
+                ec2, sessionId ?? "(none)", events);
         }
 
-        var body = lastResult ?? (assistantText.Length > 0 ? assistantText.ToString() : trimmed);
+        var meta = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(sessionId))
+            meta.Append("session_id=").Append(sessionId);
+        if (premiumRequests is int pr2)
         {
-            return body
-                + "\n\n[session_id=" + sessionId
-                + " — next call auto-resumes this session; pass freshSession=true to start over]";
+            if (meta.Length > 0) meta.Append("  ");
+            meta.Append("premium_requests=").Append(pr2);
         }
-        return body;
+        return meta.Length > 0
+            ? body + "\n\n[" + meta + " — next call auto-resumes this session; pass freshSession=true to start over]"
+            : body;
     }
 
     private static string? TryReadStringField(JsonElement obj, string name) =>

@@ -97,24 +97,36 @@ public static class JobsStreamEndpoints
     {
         if (!string.IsNullOrWhiteSpace(requested)) return requested!;
 
+        EndpointConfig? resolved = null;
         if (!string.IsNullOrWhiteSpace(endpointId))
         {
-            var match = endpoints.Items.FirstOrDefault(e =>
+            resolved = endpoints.Items.FirstOrDefault(e =>
                 string.Equals(e.Id, endpointId, StringComparison.OrdinalIgnoreCase));
-            if (match is not null && !string.IsNullOrWhiteSpace(match.DefaultModel))
-                return match.DefaultModel;
+        }
+        if (resolved is null && !string.IsNullOrWhiteSpace(endpoints.DefaultId))
+        {
+            resolved = endpoints.Items.FirstOrDefault(e =>
+                string.Equals(e.Id, endpoints.DefaultId, StringComparison.OrdinalIgnoreCase));
         }
 
-        if (!string.IsNullOrWhiteSpace(endpoints.DefaultId))
-        {
-            var def = endpoints.Items.FirstOrDefault(e =>
-                string.Equals(e.Id, endpoints.DefaultId, StringComparison.OrdinalIgnoreCase));
-            if (def is not null && !string.IsNullOrWhiteSpace(def.DefaultModel))
-                return def.DefaultModel;
-        }
+        if (resolved is not null && !string.IsNullOrWhiteSpace(resolved.DefaultModel))
+            return resolved.DefaultModel;
+
+        // For CLI-shim endpoints (Claude / Codex / Copilot), an empty model means "let the
+        // CLI pick its own default" — DO NOT fall through to the legacy OpenAI model, which
+        // would be a name (e.g. "qwen3.5:122b") the CLI would reject with
+        // 'Model "X" from --model flag is not available.'
+        if (resolved is not null && IsCliProvider(resolved.Provider))
+            return "";
 
         return legacy.DefaultModel;
     }
+
+    private static bool IsCliProvider(string? provider) => provider?.Trim().ToLowerInvariant() switch
+    {
+        "claudecli" or "claude-cli" or "codexcli" or "codex-cli" or "copilotcli" or "copilot-cli" => true,
+        _ => false,
+    };
 
     private static async Task StreamTurnAsync(
         HttpContext http,
