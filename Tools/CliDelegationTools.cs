@@ -161,11 +161,17 @@ public sealed class CliDelegationTools
                 binary: ResolveCliBinary(_toolsOptions.CopilotCliPath, "copilot"),
                 buildArgs: cfgPath =>
                 {
+                    // --allow-all-tools + --no-ask-user are mandatory for non-interactive
+                    // mode: without them Copilot either refuses to start ("required for
+                    // non-interactive mode") or spawns interactive prompts that deadlock a
+                    // subprocess with no TTY.
                     var list = new List<string>
                     {
                         "-p", task,
                         "--output-format", "json",
                         "--silent",
+                        "--allow-all-tools",
+                        "--no-ask-user",
                         "--additional-mcp-config", "@" + cfgPath,
                     };
                     if (!string.IsNullOrWhiteSpace(resumeSession))

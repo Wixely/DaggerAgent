@@ -358,10 +358,16 @@ public sealed class CliChatClient : IChatClient
                     psi.ArgumentList.Add("--session-id");
                     psi.ArgumentList.Add(resumeSession!);
                 }
-                if (_permission.CopilotAllowAllTools) psi.ArgumentList.Add("--allow-all-tools");
+                // Non-interactive mode requires --allow-all-tools (per `copilot --help`:
+                // "required for non-interactive mode"). --no-ask-user is enforced for the
+                // same reason — the ask_user tool would deadlock a subprocess. Both are
+                // always-on regardless of endpoint config; the AllowAllTools/NoAskUser
+                // fields on the endpoint stay in the DTO for round-trip compat but do not
+                // gate emission of these flags.
+                psi.ArgumentList.Add("--allow-all-tools");
+                psi.ArgumentList.Add("--no-ask-user");
                 if (_permission.CopilotAllowAllPaths) psi.ArgumentList.Add("--allow-all-paths");
                 if (_permission.CopilotAllowAllUrls) psi.ArgumentList.Add("--allow-all-urls");
-                if (_permission.CopilotNoAskUser) psi.ArgumentList.Add("--no-ask-user");
                 if (_permission.CopilotAutopilot)
                 {
                     psi.ArgumentList.Add("--autopilot");
