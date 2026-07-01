@@ -54,7 +54,11 @@ public sealed class ChatClientFactory
     public IChatClient Create(string? modelOverride, int maxIterations, string? endpointId = null, string? jobId = null)
     {
         var endpoint = ResolveEndpoint(endpointId);
-        var model = modelOverride ?? endpoint.DefaultModel;
+        // Treat an empty/whitespace override the same as unset — fall back to the endpoint's own
+        // default. A persisted ConversationState.Model is a non-null string (default ""), so a
+        // plain `?? ` would let "" through and hand an empty --model to a CLI or an empty model id
+        // to the OpenAI client; both are wrong. Empty here means "let the endpoint/provider decide".
+        var model = string.IsNullOrWhiteSpace(modelOverride) ? endpoint.DefaultModel : modelOverride;
 
         IChatClient baseClient = endpoint.Provider?.Trim().ToLowerInvariant() switch
         {

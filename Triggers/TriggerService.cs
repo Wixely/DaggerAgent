@@ -606,11 +606,29 @@ public sealed class TriggerService : BackgroundService
             }
         }
 
-        var model = !string.IsNullOrWhiteSpace(source.Model)
-            ? source.Model
-            : (!string.IsNullOrWhiteSpace(chosenEndpoint?.DefaultModel)
-                ? chosenEndpoint!.DefaultModel
-                : openAi.DefaultModel);
+        // Resolve the endpoint this job will actually run against, mirroring ChatClientFactory's
+        // precedence: explicit per-source override → global default → first enabled endpoint.
+        var effectiveEndpoint = chosenEndpoint
+            ?? endpoints.Items.FirstOrDefault(e =>
+                !string.IsNullOrWhiteSpace(endpoints.DefaultId) &&
+                string.Equals(e.Id, endpoints.DefaultId, StringComparison.OrdinalIgnoreCase))
+            ?? endpoints.Items.FirstOrDefault(e => e.Enabled);
+
+        // Model precedence: explicit source override → the resolved endpoint's own default.
+        // The legacy OpenAI.DefaultModel is used ONLY when no Endpoints are configured at all
+        // (a pure legacy install). Otherwise a blank stays blank so the resolved provider/CLI
+        // picks its own default — critical for CLI endpoints (Claude/Codex/Copilot), which would
+        // reject the LM-Studio-style OpenAI.DefaultModel handed in as --model (the original
+        // `Model "qwen3.5:122b" from --model flag is not available` failure).
+        string model;
+        if (!string.IsNullOrWhiteSpace(source.Model))
+            model = source.Model;
+        else if (!string.IsNullOrWhiteSpace(effectiveEndpoint?.DefaultModel))
+            model = effectiveEndpoint.DefaultModel;
+        else if (effectiveEndpoint is null)
+            model = openAi.DefaultModel;   // no Endpoints configured — legacy single-endpoint path
+        else
+            model = "";                    // let the resolved provider/CLI choose its own default
 
         var state = agent.CreateState(model);
         if (chosenEndpoint is not null) state.EndpointId = chosenEndpoint.Id;
