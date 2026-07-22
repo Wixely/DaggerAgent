@@ -16,6 +16,7 @@ data/
 appsettings.Development.json
 appsettings.Local.json
 appsettings.*.Local.json
+local-config/
 secrets.json
 .env
 .env.*
