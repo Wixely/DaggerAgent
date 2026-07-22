@@ -215,11 +215,13 @@ body { font-feature-settings: "ss01"; }
   margin-top: 6px; font-size: 0.75rem; color: var(--bs-secondary-color);
   display: flex; gap: 12px; align-items: center;
 }
-.msg-footer .copy-btn {
+.msg-footer .copy-btn,
+.msg-footer .retry-btn {
   background: transparent; border: none; color: var(--bs-secondary-color);
   font-size: 0.75rem; padding: 0; cursor: pointer;
 }
-.msg-footer .copy-btn:hover { color: var(--bs-body-color); }
+.msg-footer .copy-btn:hover,
+.msg-footer .retry-btn:hover { color: var(--bs-body-color); }
 
 /* ─────────────────────────── composer ─────────────────────────── */
 

@@ -314,6 +314,25 @@ function pushSegment(node) {
   state.lastBlock = node;
 }
 
+// Add a "retry" button to the current message's footer (next to "copy") when a turn errors.
+// Captures THIS turn's prompt/images in the closure so an old error bubble always re-sends the
+// prompt that failed on it, not whatever was typed later. No-op if already added.
+function showRetryButton() {
+  const footer = state.currentFooter;
+  if (!footer || footer.querySelector(".retry-btn")) return;
+  const turn = state.lastTurn;
+  if (!turn) return;
+  const btn = el("button", {
+    class: "retry-btn",
+    title: "Resend the previous prompt",
+    onclick: () => {
+      if (state.streaming) return;   // don't stack turns on top of a running one
+      runTurn(turn.prompt, turn.images);
+    },
+  }, "retry");
+  footer.insertBefore(btn, footer.firstChild);
+}
+
 // ───────────────────────────────────────────────────────────
 // markdown renderer (marked + DOMPurify, both vendored as embedded assets)
 // ───────────────────────────────────────────────────────────
@@ -1548,6 +1567,7 @@ function flashStatus(text, cls) {
 
 async function runTurn(prompt, images) {
   state.streaming = true;
+  state.lastTurn = { prompt, images };   // remembered so the on-error "retry" button can resend it
   state.abortCtrl = new AbortController();
   els.btnSend.classList.add("d-none");
   els.btnCancel.classList.remove("d-none");
@@ -1575,6 +1595,7 @@ async function runTurn(prompt, images) {
       console.error(e);
       appendAnswerChunk(`\n[error: ${e.message}]`);
       flashStatus("error", "error");
+      showRetryButton();
     }
   } finally {
     state.streaming = false;
@@ -1799,6 +1820,7 @@ function handleSseEvent(name, data) {
     case "error":
       appendAnswerChunk(`\n[error: ${data.message}]`);
       flashStatus("error", "error");
+      showRetryButton();
       break;
     case "done":
       break;
