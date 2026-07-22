@@ -177,6 +177,11 @@ public sealed class LlmAgent
             state.Status = JobStatus.Failed;
             state.UpdatedAt = DateTimeOffset.UtcNow;
             await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
+            // Surface the server's reason (not just "Service request failed. Status: 400") to
+            // every caller — the web UI shows ex.Message, so without this the body only ever
+            // reached the log.
+            if (body is not null)
+                throw new LlmApiException($"{ex.Message} — server response: {body}", ex);
             throw;
         }
         finally { sw.Stop(); }
@@ -319,7 +324,10 @@ public sealed class LlmAgent
                 {
                     var body = TryGetApiErrorBody(ex);
                     if (body is not null)
+                    {
                         _log.LogError(ex, "Streaming LLM call failed for job {JobId}. Server response body: {ResponseBody}", state.Id, body);
+                        throw new LlmApiException($"{ex.Message} — server response: {body}", ex);
+                    }
                     throw;
                 }
 
@@ -569,4 +577,17 @@ public sealed class LlmAgent
             MessageId = msg.MessageId,
         };
     }
+}
+
+/// <summary>
+/// Thrown when an LLM endpoint returns an HTTP error whose response body carries the real
+/// reason (e.g. a vLLM 400 "The model '…' does not exist"). Its <see cref="Exception.Message"/>
+/// already embeds that body, so surfaces that show <c>ex.Message</c> (the web UI's error event,
+/// the CLI, trigger-job logs) display the server's reason instead of the SDK's generic
+/// "Service request failed. Status: 400 (Bad Request)". The original exception is preserved as
+/// <see cref="Exception.InnerException"/>.
+/// </summary>
+public sealed class LlmApiException : Exception
+{
+    public LlmApiException(string message, Exception inner) : base(message, inner) { }
 }
