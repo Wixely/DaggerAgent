@@ -169,7 +169,11 @@ public sealed class LlmAgent
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "LLM call failed for job {JobId}", state.Id);
+            var body = TryGetApiErrorBody(ex);
+            if (body is not null)
+                _log.LogError(ex, "LLM call failed for job {JobId}. Server response body: {ResponseBody}", state.Id, body);
+            else
+                _log.LogError(ex, "LLM call failed for job {JobId}", state.Id);
             state.Status = JobStatus.Failed;
             state.UpdatedAt = DateTimeOffset.UtcNow;
             await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
@@ -201,6 +205,34 @@ public sealed class LlmAgent
         await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
 
         return response;
+    }
+
+    /// <summary>
+    /// The OpenAI-compatible path (vLLM, LM Studio, OpenRouter, …) throws
+    /// <c>System.ClientModel.ClientResultException</c> on an HTTP error. Its <c>Message</c> is the
+    /// generic "Service request failed. Status: 400 (Bad Request)"; the server's actual reason
+    /// lives only in the raw response body. Extract that body (walking <c>InnerException</c>, since
+    /// the function-invocation middleware can wrap the original) so the log shows exactly what the
+    /// server rejected. Truncated so a large HTML error page can't flood the log. Returns null when
+    /// the exception carries no readable body (e.g. a network/timeout failure, or the native
+    /// Anthropic path, which surfaces its own error text).
+    /// </summary>
+    private static string? TryGetApiErrorBody(Exception? ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.ClientModel.ClientResultException cre)
+            {
+                try
+                {
+                    var body = cre.GetRawResponse()?.Content?.ToString();
+                    if (!string.IsNullOrWhiteSpace(body))
+                        return body.Length > 4000 ? body[..4000] + "…(truncated)" : body;
+                }
+                catch { /* response content not buffered — nothing extra to surface */ }
+            }
+        }
+        return null;
     }
 
     public IAsyncEnumerable<ChatResponseUpdate> RunStreamingTurnAsync(
@@ -267,10 +299,30 @@ public sealed class LlmAgent
         // assistant turn never closes — the next user message then arrives as a second
         // consecutive user turn, which most chat APIs reject or treat as a continuation.
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        // Manual enumeration (rather than `await foreach`) so an exception from MoveNextAsync — e.g.
+        // a 400 returned before the first token — can be caught and its response body logged. A
+        // `yield return` can't sit inside a try/catch in an iterator, so the catch wraps only the
+        // advance, and the yield stays outside it.
+        var enumerator = client.GetStreamingResponseAsync(state.History, options, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
         try
         {
-            await foreach (var update in client.GetStreamingResponseAsync(state.History, options, cancellationToken).ConfigureAwait(false))
+            while (true)
             {
+                ChatResponseUpdate update;
+                try
+                {
+                    if (!await enumerator.MoveNextAsync().ConfigureAwait(false)) break;
+                    update = enumerator.Current;
+                }
+                catch (Exception ex)
+                {
+                    var body = TryGetApiErrorBody(ex);
+                    if (body is not null)
+                        _log.LogError(ex, "Streaming LLM call failed for job {JobId}. Server response body: {ResponseBody}", state.Id, body);
+                    throw;
+                }
+
                 foreach (var content in update.Contents)
                 {
                     switch (content)
@@ -291,6 +343,7 @@ public sealed class LlmAgent
         }
         finally
         {
+            await enumerator.DisposeAsync().ConfigureAwait(false);
             sw.Stop();
             await FinaliseStreamingTurnAsync(state, collected, cache, sw.Elapsed, toolElapsed, toolCalls).ConfigureAwait(false);
         }
