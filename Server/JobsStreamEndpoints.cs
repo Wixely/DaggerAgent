@@ -60,6 +60,8 @@ public static class JobsStreamEndpoints
             SendMessageStreamRequest req,
             LlmAgent agent,
             IJobStore store,
+            IOptions<EndpointsOptions> endpoints,
+            IOptions<OpenAIOptions> openAi,
             IOptions<ToolsOptions> toolsOpts,
             CancellationToken ct) =>
         {
@@ -69,8 +71,14 @@ public static class JobsStreamEndpoints
                 http.Response.StatusCode = StatusCodes.Status404NotFound;
                 return EmptyResult();
             }
-            if (!string.IsNullOrWhiteSpace(req.Model)) state.Model = req.Model!;
             if (!string.IsNullOrWhiteSpace(req.EndpointId)) state.EndpointId = req.EndpointId;
+            // Per-turn model: an explicit composer override wins; an empty box means
+            // "(endpoint default)" (the box placeholder), so re-resolve it from the endpoint's
+            // CURRENT default each turn instead of keeping the value stamped at job creation.
+            // Without this, editing an endpoint's model in the UI never reaches an open chat.
+            state.Model = !string.IsNullOrWhiteSpace(req.Model)
+                ? req.Model!
+                : ResolveModel(null, state.EndpointId, endpoints.Value, openAi.Value);
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
             {
                 state.WorkingDirectory = req.WorkingDirectory!;
