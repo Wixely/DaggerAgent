@@ -66,6 +66,9 @@ public sealed class ShellToolset
             catch (OperationCanceledException)
             {
                 try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+                // Drain the reader tasks so they don't surface as unobserved exceptions once
+                // Kill closes the pipes.
+                try { await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false); } catch { }
                 return $"Error: command timed out after {_options.ShellTimeoutSeconds}s.";
             }
 

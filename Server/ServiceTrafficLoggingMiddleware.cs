@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +12,16 @@ namespace Daggeragent.Server;
 public static class ServiceTrafficLoggingMiddleware
 {
     private const int MaxLoggedBodyChars = 32 * 1024;
+
+    // Header redaction (below) doesn't help the request BODY: POST /endpoints and /mcp-config
+    // carry apiKey / authHeader / secret env-vars in cleartext JSON. Redact those values so they
+    // don't land in the Info-level traffic log.
+    private static readonly Regex SecretJsonField = new(
+        "(\"(?:apiKey|authHeader|password|secret|token|apiToken)\"\\s*:\\s*)\"[^\"]*\"",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static string RedactSecrets(string body) =>
+        string.IsNullOrEmpty(body) ? body : SecretJsonField.Replace(body, "$1\"<redacted>\"");
 
     private static readonly HashSet<string> SensitiveHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -32,7 +43,7 @@ public static class ServiceTrafficLoggingMiddleware
 
             var request = context.Request;
             var requestId = context.TraceIdentifier;
-            var requestBody = await ReadRequestBodyAsync(request, context.RequestAborted).ConfigureAwait(false);
+            var requestBody = RedactSecrets(await ReadRequestBodyAsync(request, context.RequestAborted).ConfigureAwait(false));
 
             log.LogInformation(
                 "HTTP request in {RequestId}: {Method} {Path}{QueryString} from {RemoteIp} protocol={Protocol} scheme={Scheme} contentType={ContentType} contentLength={ContentLength} headers={Headers} body={Body}",

@@ -292,7 +292,7 @@ public sealed class FilesystemTools
             var matchResult = matcher.Execute(new Microsoft.Extensions.FileSystemGlobbing.Abstractions.DirectoryInfoWrapper(new DirectoryInfo(root)));
             if (!matchResult.HasMatches) return "(no files matched include)";
 
-            var regex = new Regex(pattern, ignoreCase ? RegexOptions.IgnoreCase | RegexOptions.Compiled : RegexOptions.Compiled);
+            var regex = new Regex(pattern, ignoreCase ? RegexOptions.IgnoreCase | RegexOptions.Compiled : RegexOptions.Compiled, TimeSpan.FromSeconds(2));
             var hits = new List<string>();
             foreach (var file in matchResult.Files)
             {
@@ -439,6 +439,7 @@ public sealed class FilesystemTools
         {
             var resolved = ResolveScoped(path);
             if (!File.Exists(resolved)) return $"Error: file not found: {path}";
+            if (lines <= 0) lines = 50;
             var sb = new StringBuilder();
             var n = 0;
             using var reader = new StreamReader(resolved);
@@ -464,7 +465,8 @@ public sealed class FilesystemTools
         {
             var resolved = ResolveScoped(path);
             if (!File.Exists(resolved)) return $"Error: file not found: {path}";
-            var ring = new Queue<string>(lines);
+            if (lines <= 0) lines = 50;
+            var ring = new Queue<string>();
             using var reader = new StreamReader(resolved);
             while (true)
             {
