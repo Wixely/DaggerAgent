@@ -19,6 +19,7 @@ public sealed class LlmAgent
     private readonly TokenEstimator _tokenEstimator;
     private readonly PersonalityProvider _personality;
     private readonly AgentOptions _agentOptions;
+    private readonly EndpointsOptions _endpoints;
     private readonly ToolsOptions _toolsOptions;
     private readonly PricingOptions _pricingOptions;
     private readonly HostLaunchInfo _launchInfo;
@@ -34,6 +35,7 @@ public sealed class LlmAgent
         TokenEstimator tokenEstimator,
         PersonalityProvider personality,
         IOptions<AgentOptions> agentOptions,
+        IOptions<EndpointsOptions> endpoints,
         IOptions<ToolsOptions> toolsOptions,
         IOptions<PricingOptions> pricingOptions,
         HostLaunchInfo launchInfo,
@@ -48,11 +50,47 @@ public sealed class LlmAgent
         _tokenEstimator = tokenEstimator;
         _personality = personality;
         _agentOptions = agentOptions.Value;
+        _endpoints = endpoints.Value;
         _toolsOptions = toolsOptions.Value;
         _pricingOptions = pricingOptions.Value;
         _launchInfo = launchInfo;
         _toolResultStore = toolResultStore;
         _log = log;
+    }
+
+    /// <summary>
+    /// Per-turn budget for this state's endpoint. <c>compressionThreshold</c> is the global
+    /// <see cref="AgentOptions.CompressionThreshold"/> unless the endpoint declares a
+    /// <see cref="EndpointConfig.MaxContextTokens"/>, in which case it is scaled by the global
+    /// threshold:context ratio so the operator's configured safety margin carries to the smaller
+    /// window. <c>maxOutputTokens</c> is null unless the endpoint sets one.
+    /// </summary>
+    private (int compressionThreshold, int? maxOutputTokens) ResolveTurnBudget(ConversationState state)
+    {
+        // Mirror ChatClientFactory's endpoint resolution (explicit override → global default →
+        // first enabled) so the budget matches the endpoint the turn actually runs on, even when
+        // the job never pinned one.
+        EndpointConfig? ep = null;
+        if (!string.IsNullOrWhiteSpace(state.EndpointId))
+            ep = _endpoints.Items.FirstOrDefault(e => string.Equals(e.Id, state.EndpointId, StringComparison.OrdinalIgnoreCase));
+        if (ep is null && !string.IsNullOrWhiteSpace(_endpoints.DefaultId))
+            ep = _endpoints.Items.FirstOrDefault(e => string.Equals(e.Id, _endpoints.DefaultId, StringComparison.OrdinalIgnoreCase));
+        ep ??= _endpoints.Items.FirstOrDefault(e => e.Enabled);
+
+        var threshold = _agentOptions.CompressionThreshold;
+        if (ep is { MaxContextTokens: > 0 })
+        {
+            // Preserve the global threshold:max ratio (default 0.75) against the endpoint's window —
+            // e.g. a 32k model compresses around 24k of history, leaving headroom for the system
+            // prompt, tool schemas, and the reply.
+            var ratio = _agentOptions.MaxContextTokens > 0
+                ? (double)_agentOptions.CompressionThreshold / _agentOptions.MaxContextTokens
+                : 0.75;
+            threshold = Math.Max(1, (int)(ep.MaxContextTokens * ratio));
+        }
+
+        int? maxOut = ep is { MaxOutputTokens: > 0 } ? ep.MaxOutputTokens : null;
+        return (threshold, maxOut);
     }
 
     /// <summary>
@@ -145,10 +183,12 @@ public sealed class LlmAgent
         var cache = new Tools.TurnToolCache();
         var tools = WrapTools(rawTools, state.Id, cache);
 
+        var turnBudget = ResolveTurnBudget(state);
         var options = new ChatOptions
         {
             ModelId = state.Model,
             Tools = tools.Count > 0 ? tools : null,
+            MaxOutputTokens = turnBudget.maxOutputTokens,
         };
 
         // Sub-agents get a tighter per-request iteration cap than top-level turns so a
@@ -200,7 +240,7 @@ public sealed class LlmAgent
         RecordUsage(state, response, thinkingTokensThisTurn, sw.Elapsed, streaming: false);
         LogCacheStats(state, cache);
 
-        if (state.ApproxTokenCount > _agentOptions.CompressionThreshold)
+        if (state.ApproxTokenCount > turnBudget.compressionThreshold)
         {
             await _compressor.CompressAsync(state, cancellationToken).ConfigureAwait(false);
         }
@@ -283,6 +323,7 @@ public sealed class LlmAgent
         {
             ModelId = state.Model,
             Tools = tools.Count > 0 ? tools : null,
+            MaxOutputTokens = ResolveTurnBudget(state).maxOutputTokens,
         };
 
         var iterationCap = state.Depth > 0
@@ -401,7 +442,7 @@ public sealed class LlmAgent
         state.LastTurnFinishReason = response.FinishReason?.Value;
 
         LogCacheStats(state, cache);
-        if (state.ApproxTokenCount > _agentOptions.CompressionThreshold)
+        if (state.ApproxTokenCount > ResolveTurnBudget(state).compressionThreshold)
         {
             try { await _compressor.CompressAsync(state, CancellationToken.None).ConfigureAwait(false); }
             catch (Exception ex) { _log.LogWarning(ex, "Compression failed during streaming turn cleanup"); }

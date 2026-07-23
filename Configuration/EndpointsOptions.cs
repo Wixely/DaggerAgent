@@ -52,6 +52,24 @@ public sealed class EndpointConfig
     /// <summary>When false, the endpoint is kept in the config but hidden from the UI dropdown.</summary>
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// The model's context window in tokens. When &gt; 0, DaggerAgent sizes its history-compression
+    /// trigger to this endpoint instead of the global <c>Agent:CompressionThreshold</c> — so a
+    /// small-context model (e.g. a 32k vLLM model) compresses in time rather than overflowing the
+    /// window. 0 = use the global <c>Agent</c> setting. Note: this budgets conversation HISTORY;
+    /// large tool schemas (many connected MCP tools) are a separate per-request cost that this does
+    /// not trim — disconnect MCP servers for small-context endpoints if the tools alone overflow.
+    /// </summary>
+    public int MaxContextTokens { get; set; }
+
+    /// <summary>
+    /// Cap on output tokens (<c>max_tokens</c>) for this endpoint. When &gt; 0 it is sent on every
+    /// request, so the server reserves output space (and small models don't try to derive an output
+    /// budget from an already-full context). 0 = provider default — the OpenAI-compatible path sends
+    /// no <c>max_tokens</c>; the Anthropic path uses its own built-in default.
+    /// </summary>
+    public int MaxOutputTokens { get; set; }
+
     // ── ClaudeCli-specific knobs (ignored for other providers) ────────────────────────────────
 
     /// <summary>
