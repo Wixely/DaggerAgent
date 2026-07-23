@@ -128,9 +128,31 @@ public static class Program
             builder.Services.AddSingleton(launchInfo);
             RegisterServices(builder);
 
-            // Kestrel config — only matters for Service / WindowsService modes.
+            // Kestrel binding — Service / WindowsService modes only. Default is loopback-only
+            // (Server:Host = "localhost") so the agent API (tool-calling jobs, config CRUD, the
+            // OpenAI/Ollama-compatible endpoints) isn't reachable off-box without an explicit
+            // opt-in. "0.0.0.0"/"*" binds all interfaces; a specific IP binds that IP; anything
+            // unrecognised falls back to loopback.
             var server = builder.Configuration.GetSection(ServerOptions.SectionName).Get<ServerOptions>() ?? new ServerOptions();
-            builder.WebHost.ConfigureKestrel(k => k.ListenAnyIP(server.Port));
+            var auth = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
+            var bindHost = (server.Host ?? "").Trim();
+            var loopbackOnly = bindHost.Length == 0
+                || bindHost.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                || bindHost == "127.0.0.1" || bindHost == "::1";
+            builder.WebHost.ConfigureKestrel(k =>
+            {
+                if (loopbackOnly)
+                    k.ListenLocalhost(server.Port);
+                else if (bindHost is "0.0.0.0" or "*" or "+" or "::")
+                    k.ListenAnyIP(server.Port);
+                else if (System.Net.IPAddress.TryParse(bindHost, out var ip))
+                    k.Listen(ip, server.Port);
+                else
+                {
+                    Log.Warning("Server:Host '{Host}' is not a recognised IP or 'localhost' — binding loopback only.", bindHost);
+                    k.ListenLocalhost(server.Port);
+                }
+            });
 
             var app = builder.Build();
 
@@ -166,6 +188,12 @@ public static class Program
                 }
                 catch (Exception ex) { Log.Warning(ex, "Orphan sweep failed"); }
 
+                if (!loopbackOnly && auth.ApiKeys.Count == 0)
+                    Log.Warning(
+                        "SECURITY: DaggerAgent is bound to {Host} (network-reachable) with NO Auth:ApiKeys configured — " +
+                        "the agent API (tool-calling jobs, config, OpenAI-compatible endpoints) is UNAUTHENTICATED. " +
+                        "Set Auth:ApiKeys (e.g. DAGGER_Auth__ApiKeys__0=<key>) before exposing it on a network.",
+                        bindHost);
                 Log.Information("DaggerAgent service listening on http://{Host}:{Port}{Path}", server.Host, server.Port, server.Path);
                 await app.RunAsync().ConfigureAwait(false);
                 return 0;
