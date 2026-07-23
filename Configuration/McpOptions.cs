@@ -48,4 +48,14 @@ public sealed class McpServerConfig
     /// inside the CLI, so anything stateful (sqlite, in-memory caches) won't share state.
     /// </summary>
     public bool PassthroughToCli { get; set; }
+
+    /// <summary>Deep copy — used by the copy-on-write config mutation path so an edit produces a
+    /// new object (with its own inner collections) rather than mutating one a reader may hold.</summary>
+    public McpServerConfig Clone()
+    {
+        var c = (McpServerConfig)MemberwiseClone();
+        c.Arguments = new List<string>(Arguments);
+        c.EnvironmentVariables = new Dictionary<string, string>(EnvironmentVariables);
+        return c;
+    }
 }

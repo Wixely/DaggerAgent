@@ -33,6 +33,12 @@ public sealed class RuntimeConfigStore
     private readonly HostLaunchInfo _launchInfo;
     private readonly ILogger<RuntimeConfigStore> _log;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
+    // Serialises config MUTATIONS so two concurrent CRUD calls can't lose an update via
+    // read-copy-swap. Readers take nothing: mutations swap collection references atomically
+    // (copy-on-write) and never touch a list in flight, so an in-progress enumeration always
+    // sees a consistent snapshot. Separate from _ioLock (which SaveAsync takes) to avoid
+    // re-entrancy — MutateAsync calls SaveAsync.
+    private readonly SemaphoreSlim _mutateLock = new(1, 1);
 
     public RuntimeConfigStore(
         IOptions<EndpointsOptions> endpoints,
@@ -68,20 +74,18 @@ public sealed class RuntimeConfigStore
             var snapshot = JsonSerializer.Deserialize<RuntimeConfigSnapshot>(json, JsonOpts);
             if (snapshot is null) return;
 
-            // Endpoints — replace wholesale. Empty list is legitimate (user cleared it).
+            // Endpoints — replace wholesale via reference-swap (never mutate the live list in
+            // place: a concurrent turn may be enumerating it — copy-on-write). Empty list is
+            // legitimate (user cleared it).
             if (snapshot.Endpoints is not null)
             {
                 _endpoints.DefaultId = snapshot.Endpoints.DefaultId;
-                _endpoints.Items.Clear();
-                foreach (var e in snapshot.Endpoints.Items) _endpoints.Items.Add(e);
+                _endpoints.Items = snapshot.Endpoints.Items.ToList();
             }
 
-            // MCP servers — same wholesale-replace shape.
+            // MCP servers — same wholesale reference-swap.
             if (snapshot.Mcp is not null)
-            {
-                _mcp.Servers.Clear();
-                foreach (var s in snapshot.Mcp.Servers) _mcp.Servers.Add(s);
-            }
+                _mcp.Servers = snapshot.Mcp.Servers.ToList();
 
             // Triggers — full options block. TriggerService reads the live IOptions value
             // every cycle so mutations here are picked up without a restart (modulo the loop
@@ -95,10 +99,8 @@ public sealed class RuntimeConfigStore
                 _triggers.JobPreamble = snapshot.Triggers.JobPreamble;
                 _triggers.MaxAutoResumeAttempts = snapshot.Triggers.MaxAutoResumeAttempts;
                 _triggers.MaxConcurrentJobs = snapshot.Triggers.MaxConcurrentJobs;
-                _triggers.AllowedAuthors.Clear();
-                foreach (var a in snapshot.Triggers.AllowedAuthors) _triggers.AllowedAuthors.Add(a);
-                _triggers.Sources.Clear();
-                foreach (var s in snapshot.Triggers.Sources) _triggers.Sources.Add(s);
+                _triggers.AllowedAuthors = snapshot.Triggers.AllowedAuthors.ToList();
+                _triggers.Sources = snapshot.Triggers.Sources.ToList();
             }
 
             // Last working directory — only this slice of ToolsOptions is persisted (other
@@ -190,6 +192,29 @@ public sealed class RuntimeConfigStore
         }
         finally { _ioLock.Release(); }
     }
+
+    /// <summary>
+    /// Run a config mutation under the writer lock, then persist. The mutation must use
+    /// copy-on-write — build a new collection and assign it to the options property (reference
+    /// swap) rather than mutating the live list in place — so concurrent readers (turns, the
+    /// poller, MCP connect) never see a torn collection. Returns the mutation's result so callers
+    /// can build a response view from the freshly-swapped object.
+    /// </summary>
+    public async Task<T> MutateAsync<T>(Func<T> mutate, CancellationToken ct = default)
+    {
+        await _mutateLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var result = mutate();
+            await SaveAsync(ct).ConfigureAwait(false);
+            return result;
+        }
+        finally { _mutateLock.Release(); }
+    }
+
+    /// <summary>Void overload of <see cref="MutateAsync{T}"/>.</summary>
+    public Task MutateAsync(Action mutate, CancellationToken ct = default) =>
+        MutateAsync(() => { mutate(); return true; }, ct);
 
     private sealed class RuntimeConfigSnapshot
     {

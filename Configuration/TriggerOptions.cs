@@ -121,6 +121,10 @@ public sealed class TriggerSource
     /// the legacy <c>OpenAI.DefaultModel</c>).
     /// </summary>
     public string Model { get; set; } = "";
+
+    /// <summary>Shallow copy (all fields are scalars) — used by the copy-on-write config mutation
+    /// path so an edit produces a new object rather than mutating one a reader may hold.</summary>
+    public TriggerSource Clone() => (TriggerSource)MemberwiseClone();
 }
 
 public enum TriggerMode

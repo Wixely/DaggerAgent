@@ -166,4 +166,15 @@ public sealed class EndpointConfig
     /// trigger endpoints alongside <see cref="CopilotAllowAllTools"/>. Default false.
     /// </summary>
     public bool CopilotNoAskUser { get; set; }
+
+    /// <summary>Deep copy — used by the copy-on-write config mutation path so an edit produces a
+    /// new object (with its own inner lists) rather than mutating one a reader may hold.</summary>
+    public EndpointConfig Clone()
+    {
+        var c = (EndpointConfig)MemberwiseClone();
+        c.ClaudeAllowedTools = new List<string>(ClaudeAllowedTools);
+        c.CopilotAllowedTools = new List<string>(CopilotAllowedTools);
+        c.CopilotDeniedTools = new List<string>(CopilotDeniedTools);
+        return c;
+    }
 }

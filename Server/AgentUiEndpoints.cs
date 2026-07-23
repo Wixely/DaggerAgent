@@ -60,53 +60,46 @@ public static class AgentUiEndpoints
             if (string.IsNullOrWhiteSpace(patch.Id))
                 return Results.BadRequest(new { error = "id required" });
 
-            var v = endpoints.Value;
-            var existing = v.Items.FirstOrDefault(e => string.Equals(e.Id, patch.Id, StringComparison.OrdinalIgnoreCase));
-            if (existing is null)
+            var view = await store.MutateAsync(() =>
             {
-                existing = new EndpointConfig { Id = patch.Id };
-                v.Items.Add(existing);
-            }
-            if (patch.DisplayName is not null) existing.DisplayName = patch.DisplayName;
-            if (patch.Provider is not null) existing.Provider = patch.Provider;
-            if (patch.BaseUrl is not null) existing.BaseUrl = patch.BaseUrl;
-            if (patch.ApiKey is not null) existing.ApiKey = patch.ApiKey;
-            if (patch.DefaultModel is not null) existing.DefaultModel = patch.DefaultModel;
-            if (patch.RequestTimeoutSeconds is int t) existing.RequestTimeoutSeconds = t;
-            if (patch.Enabled is bool en) existing.Enabled = en;
-            if (patch.MaxContextTokens is int mct) existing.MaxContextTokens = mct;
-            if (patch.MaxOutputTokens is int mot) existing.MaxOutputTokens = mot;
-            if (patch.ClaudePermissionMode is not null) existing.ClaudePermissionMode = patch.ClaudePermissionMode;
-            if (patch.ClaudeAllowedTools is not null)
-            {
-                existing.ClaudeAllowedTools.Clear();
-                foreach (var s in patch.ClaudeAllowedTools.Where(x => !string.IsNullOrWhiteSpace(x)))
-                    existing.ClaudeAllowedTools.Add(s.Trim());
-            }
-            if (patch.ClaudeDangerouslySkipPermissions is bool skip) existing.ClaudeDangerouslySkipPermissions = skip;
-            if (patch.CodexSandbox is not null) existing.CodexSandbox = patch.CodexSandbox;
-            if (patch.CodexAskForApproval is not null) existing.CodexAskForApproval = patch.CodexAskForApproval;
-            if (patch.CopilotAllowAllTools is bool cpAllowAll) existing.CopilotAllowAllTools = cpAllowAll;
-            if (patch.CopilotAllowAllPaths is bool cpAllowPaths) existing.CopilotAllowAllPaths = cpAllowPaths;
-            if (patch.CopilotAllowAllUrls is bool cpAllowUrls) existing.CopilotAllowAllUrls = cpAllowUrls;
-            if (patch.CopilotAutopilot is bool cpAuto) existing.CopilotAutopilot = cpAuto;
-            if (patch.CopilotMaxAutopilotContinues is int cpMax) existing.CopilotMaxAutopilotContinues = cpMax;
-            if (patch.CopilotNoAskUser is bool cpNoAsk) existing.CopilotNoAskUser = cpNoAsk;
-            if (patch.CopilotAllowedTools is not null)
-            {
-                existing.CopilotAllowedTools.Clear();
-                foreach (var s in patch.CopilotAllowedTools.Where(x => !string.IsNullOrWhiteSpace(x)))
-                    existing.CopilotAllowedTools.Add(s.Trim());
-            }
-            if (patch.CopilotDeniedTools is not null)
-            {
-                existing.CopilotDeniedTools.Clear();
-                foreach (var s in patch.CopilotDeniedTools.Where(x => !string.IsNullOrWhiteSpace(x)))
-                    existing.CopilotDeniedTools.Add(s.Trim());
-            }
+                var items = endpoints.Value.Items;
+                var idx = items.FindIndex(e => string.Equals(e.Id, patch.Id, StringComparison.OrdinalIgnoreCase));
+                // Copy-on-write: clone the target (or create new), patch the copy, then swap a new
+                // Items list into place — never mutate an object/list a concurrent turn may be reading.
+                var target = idx >= 0 ? items[idx].Clone() : new EndpointConfig { Id = patch.Id };
 
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.Json(ToEndpointView(existing), JsonOpts.Default);
+                if (patch.DisplayName is not null) target.DisplayName = patch.DisplayName;
+                if (patch.Provider is not null) target.Provider = patch.Provider;
+                if (patch.BaseUrl is not null) target.BaseUrl = patch.BaseUrl;
+                if (patch.ApiKey is not null) target.ApiKey = patch.ApiKey;
+                if (patch.DefaultModel is not null) target.DefaultModel = patch.DefaultModel;
+                if (patch.RequestTimeoutSeconds is int t) target.RequestTimeoutSeconds = t;
+                if (patch.Enabled is bool en) target.Enabled = en;
+                if (patch.MaxContextTokens is int mct) target.MaxContextTokens = mct;
+                if (patch.MaxOutputTokens is int mot) target.MaxOutputTokens = mot;
+                if (patch.ClaudePermissionMode is not null) target.ClaudePermissionMode = patch.ClaudePermissionMode;
+                if (patch.ClaudeAllowedTools is not null)
+                    target.ClaudeAllowedTools = patch.ClaudeAllowedTools.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList();
+                if (patch.ClaudeDangerouslySkipPermissions is bool skip) target.ClaudeDangerouslySkipPermissions = skip;
+                if (patch.CodexSandbox is not null) target.CodexSandbox = patch.CodexSandbox;
+                if (patch.CodexAskForApproval is not null) target.CodexAskForApproval = patch.CodexAskForApproval;
+                if (patch.CopilotAllowAllTools is bool cpAllowAll) target.CopilotAllowAllTools = cpAllowAll;
+                if (patch.CopilotAllowAllPaths is bool cpAllowPaths) target.CopilotAllowAllPaths = cpAllowPaths;
+                if (patch.CopilotAllowAllUrls is bool cpAllowUrls) target.CopilotAllowAllUrls = cpAllowUrls;
+                if (patch.CopilotAutopilot is bool cpAuto) target.CopilotAutopilot = cpAuto;
+                if (patch.CopilotMaxAutopilotContinues is int cpMax) target.CopilotMaxAutopilotContinues = cpMax;
+                if (patch.CopilotNoAskUser is bool cpNoAsk) target.CopilotNoAskUser = cpNoAsk;
+                if (patch.CopilotAllowedTools is not null)
+                    target.CopilotAllowedTools = patch.CopilotAllowedTools.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList();
+                if (patch.CopilotDeniedTools is not null)
+                    target.CopilotDeniedTools = patch.CopilotDeniedTools.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList();
+
+                var next = new List<EndpointConfig>(items);
+                if (idx >= 0) next[idx] = target; else next.Add(target);
+                endpoints.Value.Items = next;
+                return ToEndpointView(target);
+            }, ct).ConfigureAwait(false);
+            return Results.Json(view, JsonOpts.Default);
         });
 
         group.MapDelete("/endpoints/{id}", async (
@@ -115,12 +108,16 @@ public static class AgentUiEndpoints
             RuntimeConfigStore store,
             CancellationToken ct) =>
         {
-            var v = endpoints.Value;
-            var removed = v.Items.RemoveAll(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (removed == 0) return Results.NotFound();
-            if (string.Equals(v.DefaultId, id, StringComparison.OrdinalIgnoreCase)) v.DefaultId = null;
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.NoContent();
+            var removed = await store.MutateAsync(() =>
+            {
+                var v = endpoints.Value;
+                var next = v.Items.Where(e => !string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (next.Count == v.Items.Count) return false;
+                v.Items = next;
+                if (string.Equals(v.DefaultId, id, StringComparison.OrdinalIgnoreCase)) v.DefaultId = null;
+                return true;
+            }, ct).ConfigureAwait(false);
+            return removed ? Results.NoContent() : Results.NotFound();
         });
 
         // Set the global "active" endpoint that new jobs inherit.
@@ -130,12 +127,15 @@ public static class AgentUiEndpoints
             RuntimeConfigStore store,
             CancellationToken ct) =>
         {
-            var v = endpoints.Value;
-            var match = v.Items.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (match is null) return Results.NotFound();
-            v.DefaultId = match.Id;
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.Json(new { defaultId = v.DefaultId }, JsonOpts.Default);
+            var result = await store.MutateAsync(() =>
+            {
+                var v = endpoints.Value;
+                var match = v.Items.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase));
+                if (match is null) return (object?)null;
+                v.DefaultId = match.Id;
+                return new { defaultId = v.DefaultId };
+            }, ct).ConfigureAwait(false);
+            return result is null ? Results.NotFound() : Results.Json(result, JsonOpts.Default);
         });
 
         // ──────────────────────────── MCP servers (config CRUD) ────────────────────────────
@@ -157,23 +157,27 @@ public static class AgentUiEndpoints
         {
             if (string.IsNullOrWhiteSpace(patch.Name))
                 return Results.BadRequest(new { error = "name required" });
-            var v = mcp.Value;
-            var existing = v.Servers.FirstOrDefault(s => string.Equals(s.Name, patch.Name, StringComparison.OrdinalIgnoreCase));
-            if (existing is null)
+            var view = await store.MutateAsync(() =>
             {
-                existing = new McpServerConfig { Name = patch.Name };
-                v.Servers.Add(existing);
-            }
-            if (patch.Enabled is bool en) existing.Enabled = en;
-            if (patch.Url is not null) existing.Url = patch.Url;
-            if (patch.AuthHeader is not null) existing.AuthHeader = patch.AuthHeader;
-            if (patch.Command is not null) existing.Command = patch.Command;
-            if (patch.Arguments is not null) existing.Arguments = patch.Arguments.ToList();
-            if (patch.WorkingDirectory is not null) existing.WorkingDirectory = patch.WorkingDirectory;
-            if (patch.EnvironmentVariables is not null) existing.EnvironmentVariables = new Dictionary<string, string>(patch.EnvironmentVariables);
-            if (patch.PassthroughToCli is bool pt) existing.PassthroughToCli = pt;
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.Json(ToMcpServerView(existing), JsonOpts.Default);
+                var servers = mcp.Value.Servers;
+                var idx = servers.FindIndex(s => string.Equals(s.Name, patch.Name, StringComparison.OrdinalIgnoreCase));
+                var target = idx >= 0 ? servers[idx].Clone() : new McpServerConfig { Name = patch.Name };
+
+                if (patch.Enabled is bool en) target.Enabled = en;
+                if (patch.Url is not null) target.Url = patch.Url;
+                if (patch.AuthHeader is not null) target.AuthHeader = patch.AuthHeader;
+                if (patch.Command is not null) target.Command = patch.Command;
+                if (patch.Arguments is not null) target.Arguments = patch.Arguments.ToList();
+                if (patch.WorkingDirectory is not null) target.WorkingDirectory = patch.WorkingDirectory;
+                if (patch.EnvironmentVariables is not null) target.EnvironmentVariables = new Dictionary<string, string>(patch.EnvironmentVariables);
+                if (patch.PassthroughToCli is bool pt) target.PassthroughToCli = pt;
+
+                var next = new List<McpServerConfig>(servers);
+                if (idx >= 0) next[idx] = target; else next.Add(target);
+                mcp.Value.Servers = next;
+                return ToMcpServerView(target);
+            }, ct).ConfigureAwait(false);
+            return Results.Json(view, JsonOpts.Default);
         });
 
         group.MapDelete("/mcp-config/{name}", async (
@@ -182,11 +186,15 @@ public static class AgentUiEndpoints
             RuntimeConfigStore store,
             CancellationToken ct) =>
         {
-            var v = mcp.Value;
-            var removed = v.Servers.RemoveAll(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (removed == 0) return Results.NotFound();
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.NoContent();
+            var removed = await store.MutateAsync(() =>
+            {
+                var v = mcp.Value;
+                var next = v.Servers.Where(s => !string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (next.Count == v.Servers.Count) return false;
+                v.Servers = next;
+                return true;
+            }, ct).ConfigureAwait(false);
+            return removed ? Results.NoContent() : Results.NotFound();
         });
 
         // ──────────────────────────── MCP ────────────────────────────
@@ -256,21 +264,19 @@ public static class AgentUiEndpoints
             RuntimeConfigStore store,
             CancellationToken ct) =>
         {
-            var v = triggers.Value;
-            if (patch.Enabled is bool en) v.Enabled = en;
-            if (patch.PollIntervalSeconds is int p && p > 0) v.PollIntervalSeconds = p;
-            if (patch.Phrase is not null) v.Phrase = patch.Phrase;
-            if (patch.MaxJobsPerCycle is int m && m > 0) v.MaxJobsPerCycle = m;
-            if (patch.JobPreamble is not null) v.JobPreamble = patch.JobPreamble;
-            if (patch.MaxAutoResumeAttempts is int mar && mar >= 0) v.MaxAutoResumeAttempts = mar;
-            if (patch.MaxConcurrentJobs is int mcj && mcj >= 1) v.MaxConcurrentJobs = mcj;
-            if (patch.AllowedAuthors is not null)
+            await store.MutateAsync(() =>
             {
-                v.AllowedAuthors.Clear();
-                foreach (var a in patch.AllowedAuthors.Where(x => !string.IsNullOrWhiteSpace(x)))
-                    v.AllowedAuthors.Add(a.Trim());
-            }
-            await store.SaveAsync(ct).ConfigureAwait(false);
+                var v = triggers.Value;
+                if (patch.Enabled is bool en) v.Enabled = en;
+                if (patch.PollIntervalSeconds is int p && p > 0) v.PollIntervalSeconds = p;
+                if (patch.Phrase is not null) v.Phrase = patch.Phrase;
+                if (patch.MaxJobsPerCycle is int m && m > 0) v.MaxJobsPerCycle = m;
+                if (patch.JobPreamble is not null) v.JobPreamble = patch.JobPreamble;
+                if (patch.MaxAutoResumeAttempts is int mar && mar >= 0) v.MaxAutoResumeAttempts = mar;
+                if (patch.MaxConcurrentJobs is int mcj && mcj >= 1) v.MaxConcurrentJobs = mcj;
+                if (patch.AllowedAuthors is not null)
+                    v.AllowedAuthors = patch.AllowedAuthors.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList();
+            }, ct).ConfigureAwait(false);
             return Results.Json(new { ok = true }, JsonOpts.Default);
         });
 
@@ -286,24 +292,27 @@ public static class AgentUiEndpoints
             if (string.IsNullOrWhiteSpace(patch.Id))
                 return Results.BadRequest(new { error = "id required" });
 
-            var v = triggers.Value;
-            var existing = v.Sources.FirstOrDefault(s => string.Equals(s.Id, patch.Id, StringComparison.OrdinalIgnoreCase));
-            if (existing is null)
+            var view = await store.MutateAsync(() =>
             {
-                existing = new TriggerSource { Id = patch.Id };
-                v.Sources.Add(existing);
-            }
-            if (patch.Kind is not null) existing.Kind = patch.Kind;
-            if (patch.Mode is not null && Enum.TryParse<TriggerMode>(patch.Mode, ignoreCase: true, out var modeVal))
-                existing.Mode = modeVal;
-            if (patch.Filter is not null) existing.Filter = patch.Filter;
-            if (patch.McpServer is not null) existing.McpServer = patch.McpServer;
-            if (patch.Scope is not null) existing.Scope = patch.Scope;
-            if (patch.EndpointId is not null) existing.EndpointId = patch.EndpointId;
-            if (patch.Model is not null) existing.Model = patch.Model;
+                var sources = triggers.Value.Sources;
+                var idx = sources.FindIndex(s => string.Equals(s.Id, patch.Id, StringComparison.OrdinalIgnoreCase));
+                var target = idx >= 0 ? sources[idx].Clone() : new TriggerSource { Id = patch.Id };
 
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.Json(ToTriggerSourceView(existing), JsonOpts.Default);
+                if (patch.Kind is not null) target.Kind = patch.Kind;
+                if (patch.Mode is not null && Enum.TryParse<TriggerMode>(patch.Mode, ignoreCase: true, out var modeVal))
+                    target.Mode = modeVal;
+                if (patch.Filter is not null) target.Filter = patch.Filter;
+                if (patch.McpServer is not null) target.McpServer = patch.McpServer;
+                if (patch.Scope is not null) target.Scope = patch.Scope;
+                if (patch.EndpointId is not null) target.EndpointId = patch.EndpointId;
+                if (patch.Model is not null) target.Model = patch.Model;
+
+                var next = new List<TriggerSource>(sources);
+                if (idx >= 0) next[idx] = target; else next.Add(target);
+                triggers.Value.Sources = next;
+                return ToTriggerSourceView(target);
+            }, ct).ConfigureAwait(false);
+            return Results.Json(view, JsonOpts.Default);
         });
 
         group.MapDelete("/triggers/sources/{id}", async (
@@ -312,11 +321,15 @@ public static class AgentUiEndpoints
             RuntimeConfigStore store,
             CancellationToken ct) =>
         {
-            var v = triggers.Value;
-            var removed = v.Sources.RemoveAll(s => string.Equals(s.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (removed == 0) return Results.NotFound();
-            await store.SaveAsync(ct).ConfigureAwait(false);
-            return Results.NoContent();
+            var removed = await store.MutateAsync(() =>
+            {
+                var v = triggers.Value;
+                var next = v.Sources.Where(s => !string.Equals(s.Id, id, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (next.Count == v.Sources.Count) return false;
+                v.Sources = next;
+                return true;
+            }, ct).ConfigureAwait(false);
+            return removed ? Results.NoContent() : Results.NotFound();
         });
 
         // Manually run a single trigger source out-of-band. Behaves like one iteration of the
