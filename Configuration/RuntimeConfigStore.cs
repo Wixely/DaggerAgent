@@ -93,6 +93,7 @@ public sealed class RuntimeConfigStore
                 _triggers.Phrase = snapshot.Triggers.Phrase;
                 _triggers.MaxJobsPerCycle = snapshot.Triggers.MaxJobsPerCycle;
                 _triggers.JobPreamble = snapshot.Triggers.JobPreamble;
+                _triggers.MaxAutoResumeAttempts = snapshot.Triggers.MaxAutoResumeAttempts;
                 _triggers.AllowedAuthors.Clear();
                 foreach (var a in snapshot.Triggers.AllowedAuthors) _triggers.AllowedAuthors.Add(a);
                 _triggers.Sources.Clear();
@@ -106,6 +107,26 @@ public sealed class RuntimeConfigStore
             // different folder has its own runtime-config.json and won't clobber this one.
             if (!string.IsNullOrWhiteSpace(snapshot.LastWorkingDirectory))
                 _tools.WorkingDirectory = snapshot.LastWorkingDirectory;
+
+            // Durable ToolsOptions slice: CLI binary paths + the delegation / behaviour / limit
+            // knobs. Nullable fields, so an absent one leaves the appsettings baseline untouched.
+            // Security permission toggles (AllowShell / AllowWrite / ReadOnly / AllowAnyPath /
+            // WritePreview) are deliberately NOT persisted — they reset to the appsettings baseline
+            // each run so a dangerous grant can't silently outlive the session that made it.
+            if (snapshot.Tools is { } tp)
+            {
+                if (tp.ClaudeCliPath is not null) _tools.ClaudeCliPath = tp.ClaudeCliPath;
+                if (tp.CodexCliPath is not null) _tools.CodexCliPath = tp.CodexCliPath;
+                if (tp.CopilotCliPath is not null) _tools.CopilotCliPath = tp.CopilotCliPath;
+                if (tp.AllowCliDelegation is bool acd) _tools.AllowCliDelegation = acd;
+                if (tp.GranularTools is bool gt) _tools.GranularTools = gt;
+                if (tp.ForcePlan is bool fp) _tools.ForcePlan = fp;
+                if (tp.MaxFileBytes is int mfb) _tools.MaxFileBytes = mfb;
+                if (tp.MaxResults is int mr) _tools.MaxResults = mr;
+                if (tp.ShellTimeoutSeconds is int sts) _tools.ShellTimeoutSeconds = sts;
+                if (tp.ReadFileSummaryThresholdBytes is int rsb) _tools.ReadFileSummaryThresholdBytes = rsb;
+                if (tp.MaxToolResultChars is int mtrc) _tools.MaxToolResultChars = mtrc;
+            }
 
             _log.LogInformation(
                 "Loaded runtime config from {Path}: {EndpointCount} endpoint(s), {McpCount} mcp server(s), {TriggerCount} trigger source(s), cwd={Cwd}",
@@ -140,8 +161,23 @@ public sealed class RuntimeConfigStore
                     JobPreamble = _triggers.JobPreamble,
                     AllowedAuthors = _triggers.AllowedAuthors.ToList(),
                     Sources = _triggers.Sources.ToList(),
+                    MaxAutoResumeAttempts = _triggers.MaxAutoResumeAttempts,
                 },
                 LastWorkingDirectory = string.IsNullOrWhiteSpace(_tools.WorkingDirectory) ? null : _tools.WorkingDirectory,
+                Tools = new ToolsPersisted
+                {
+                    ClaudeCliPath = _tools.ClaudeCliPath,
+                    CodexCliPath = _tools.CodexCliPath,
+                    CopilotCliPath = _tools.CopilotCliPath,
+                    AllowCliDelegation = _tools.AllowCliDelegation,
+                    GranularTools = _tools.GranularTools,
+                    ForcePlan = _tools.ForcePlan,
+                    MaxFileBytes = _tools.MaxFileBytes,
+                    MaxResults = _tools.MaxResults,
+                    ShellTimeoutSeconds = _tools.ShellTimeoutSeconds,
+                    ReadFileSummaryThresholdBytes = _tools.ReadFileSummaryThresholdBytes,
+                    MaxToolResultChars = _tools.MaxToolResultChars,
+                },
             };
 
             // Atomic-ish: write to .tmp then rename. Stops a crash mid-write from corrupting
@@ -164,5 +200,28 @@ public sealed class RuntimeConfigStore
         /// launched from. Per-installation (the file lives under {ContentRoot}/data).
         /// </summary>
         public string? LastWorkingDirectory { get; set; }
+
+        /// <summary>
+        /// Durable slice of ToolsOptions — CLI binary paths, the delegation flag, and the
+        /// behaviour / limit knobs. Nullable fields so an absent one leaves the appsettings
+        /// baseline untouched on load. Security permission toggles are intentionally excluded
+        /// (kept session-scoped — see <see cref="LoadAsync"/>).
+        /// </summary>
+        public ToolsPersisted? Tools { get; set; }
+    }
+
+    private sealed class ToolsPersisted
+    {
+        public string? ClaudeCliPath { get; set; }
+        public string? CodexCliPath { get; set; }
+        public string? CopilotCliPath { get; set; }
+        public bool? AllowCliDelegation { get; set; }
+        public bool? GranularTools { get; set; }
+        public bool? ForcePlan { get; set; }
+        public int? MaxFileBytes { get; set; }
+        public int? MaxResults { get; set; }
+        public int? ShellTimeoutSeconds { get; set; }
+        public int? ReadFileSummaryThresholdBytes { get; set; }
+        public int? MaxToolResultChars { get; set; }
     }
 }
