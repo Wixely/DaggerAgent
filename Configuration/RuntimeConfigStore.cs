@@ -94,6 +94,7 @@ public sealed class RuntimeConfigStore
                 _triggers.MaxJobsPerCycle = snapshot.Triggers.MaxJobsPerCycle;
                 _triggers.JobPreamble = snapshot.Triggers.JobPreamble;
                 _triggers.MaxAutoResumeAttempts = snapshot.Triggers.MaxAutoResumeAttempts;
+                _triggers.MaxConcurrentJobs = snapshot.Triggers.MaxConcurrentJobs;
                 _triggers.AllowedAuthors.Clear();
                 foreach (var a in snapshot.Triggers.AllowedAuthors) _triggers.AllowedAuthors.Add(a);
                 _triggers.Sources.Clear();
@@ -162,6 +163,7 @@ public sealed class RuntimeConfigStore
                     AllowedAuthors = _triggers.AllowedAuthors.ToList(),
                     Sources = _triggers.Sources.ToList(),
                     MaxAutoResumeAttempts = _triggers.MaxAutoResumeAttempts,
+                    MaxConcurrentJobs = _triggers.MaxConcurrentJobs,
                 },
                 LastWorkingDirectory = string.IsNullOrWhiteSpace(_tools.WorkingDirectory) ? null : _tools.WorkingDirectory,
                 Tools = new ToolsPersisted

@@ -241,6 +241,7 @@ public static class AgentUiEndpoints
                 maxJobsPerCycle = v.MaxJobsPerCycle,
                 jobPreamble = v.JobPreamble,
                 maxAutoResumeAttempts = v.MaxAutoResumeAttempts,
+                maxConcurrentJobs = v.MaxConcurrentJobs,
                 sources = v.Sources.Select(ToTriggerSourceView).ToList(),
                 mcpServerNames = mcp.Value.Servers.Where(s => s.Enabled).Select(s => s.Name).ToList(),
             }, JsonOpts.Default);
@@ -262,6 +263,7 @@ public static class AgentUiEndpoints
             if (patch.MaxJobsPerCycle is int m && m > 0) v.MaxJobsPerCycle = m;
             if (patch.JobPreamble is not null) v.JobPreamble = patch.JobPreamble;
             if (patch.MaxAutoResumeAttempts is int mar && mar >= 0) v.MaxAutoResumeAttempts = mar;
+            if (patch.MaxConcurrentJobs is int mcj && mcj >= 1) v.MaxConcurrentJobs = mcj;
             if (patch.AllowedAuthors is not null)
             {
                 v.AllowedAuthors.Clear();
@@ -588,7 +590,7 @@ public static class AgentUiEndpoints
         baseUrl = e.BaseUrl,
         // Mask the key on read so the Settings UI can show "set / unset" without leaking it.
         // The actual value is only sent back when the user types a new one into the PATCH.
-        apiKeyMasked = string.IsNullOrEmpty(e.ApiKey) ? "" : "•••• " + e.ApiKey[^4..],
+        apiKeyMasked = string.IsNullOrEmpty(e.ApiKey) ? "" : "•••• " + e.ApiKey[^Math.Min(4, e.ApiKey.Length)..],
         hasApiKey = !string.IsNullOrEmpty(e.ApiKey),
         defaultModel = e.DefaultModel,
         requestTimeoutSeconds = e.RequestTimeoutSeconds,
@@ -691,6 +693,7 @@ internal sealed record TriggerOptionsPatch(
     int? MaxJobsPerCycle = null,
     string? JobPreamble = null,
     int? MaxAutoResumeAttempts = null,
+    int? MaxConcurrentJobs = null,
     IReadOnlyList<string>? AllowedAuthors = null);
 
 internal sealed record TriggerSourcePatch(

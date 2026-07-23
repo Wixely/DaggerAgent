@@ -23,6 +23,19 @@ public sealed class TriggerService : BackgroundService
     private readonly TriggerStateStore _state;
     private readonly ILogger<TriggerService> _log;
 
+    // Live count of triggered jobs currently running (spawned + auto-resumed). Incremented on the
+    // poll/sweep thread just before a job's background task starts, decremented in that task's
+    // finally. Read against MaxConcurrentJobs to bound total concurrency — MaxJobsPerCycle only
+    // caps spawns per cycle, not accumulation across cycles.
+    private int _runningJobs;
+
+    // Work-item keys with a job currently in flight, so a follow-up mention on the same ticket
+    // doesn't spawn a second agent into the same repo/branch while the first is still running.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _inFlightItems = new();
+
+    private int EffectiveMaxConcurrent => Math.Max(1, _options.MaxConcurrentJobs);
+    private bool AtCapacity => System.Threading.Volatile.Read(ref _runningJobs) >= EffectiveMaxConcurrent;
+
     public TriggerService(
         IServiceProvider services,
         IOptions<TriggerOptions> options,
@@ -138,6 +151,14 @@ public sealed class TriggerService : BackgroundService
                 continue;
             }
 
+            // Honour the global concurrency cap — this sweep is what produced the "5 Copilots at
+            // once" startup storm. When full, stop; the remaining orphans stay paused.
+            if (AtCapacity)
+            {
+                _log.LogInformation("Auto-resume: concurrency cap ({Max}) reached — leaving remaining orphans paused for a later resume", EffectiveMaxConcurrent);
+                break;
+            }
+
             state.AutoResumeAttempts++;
             // Persist the bumped counter before kicking off the turn so a crash partway
             // through the resume still counts against the budget.
@@ -161,6 +182,9 @@ public sealed class TriggerService : BackgroundService
         var jobId = state.Id;
         var sourceId = state.TriggerSourceId;
         var historyBefore = state.History.Count;
+        // Reserve a concurrency slot synchronously (released in the task's finally) so the sweep's
+        // AtCapacity check sees it before deciding whether to resume the next orphan.
+        System.Threading.Interlocked.Increment(ref _runningJobs);
         _ = Task.Run(async () =>
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -197,6 +221,10 @@ public sealed class TriggerService : BackgroundService
             {
                 sw.Stop();
                 _log.LogError(ex, "Auto-resumed job {JobId} failed after {WallMs}ms", jobId, sw.ElapsedMilliseconds);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Decrement(ref _runningJobs);
             }
         }, CancellationToken.None);
     }
@@ -296,8 +324,20 @@ public sealed class TriggerService : BackgroundService
         foreach (var match in matches.OrderBy(m => m.UpdatedAt))
         {
             if (spawned >= remainingBudget) break;
+            if (AtCapacity)
+            {
+                _log.LogDebug("Trigger source {Source}: at concurrency cap ({Max}) — deferring remaining matches to a later cycle",
+                    source.Id, EffectiveMaxConcurrent);
+                break;
+            }
             if (!allowed(match.Author)) continue;
             if (phraseCheck is not null && !match.Body.Contains(phraseCheck, StringComparison.OrdinalIgnoreCase)) continue;
+
+            // Per-ticket serialisation: if a job for this work item is already running, leave the
+            // match unclaimed so it's picked up once that job finishes, rather than racing a second
+            // agent into the same repo/branch.
+            var itemKey = source.Id + " " + match.WorkItemKey();
+            if (_inFlightItems.ContainsKey(itemKey)) continue;
 
             var key = match.MatchKey();
             if (!await _state.ClaimMatchAsync(source.Id, key, ct).ConfigureAwait(false))
@@ -307,15 +347,19 @@ public sealed class TriggerService : BackgroundService
 
             try
             {
-                var jobId = await SpawnJobAsync(source, match, ct).ConfigureAwait(false);
-                await _state.AttachJobIdAsync(source.Id, key, jobId, ct).ConfigureAwait(false);
+                var jobId = await SpawnJobAsync(source, match, key, itemKey, ct).ConfigureAwait(false);
                 spawned++;
-                _log.LogInformation("Triggered job {JobId} for {Source}:{Ref} (mode={Mode}, author={Author})",
-                    jobId, source.Id, match.ShortRef(), source.Mode, match.Author);
+                _log.LogInformation("Triggered job {JobId} for {Source}:{Ref} (mode={Mode}, author={Author}, running={Running}/{Max})",
+                    jobId, source.Id, match.ShortRef(), source.Mode, match.Author,
+                    System.Threading.Volatile.Read(ref _runningJobs), EffectiveMaxConcurrent);
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "Failed to spawn job for {Source}:{Ref}", source.Id, match.ShortRef());
+                // The job never started (spawn failed before reserving its slot) — un-claim so a
+                // later cycle can retry rather than suppressing the mention forever.
+                try { await _state.ReleaseMatchAsync(source.Id, key, ct).ConfigureAwait(false); }
+                catch (Exception rex) { _log.LogWarning(rex, "Failed to release claim for {Source}:{Ref}", source.Id, match.ShortRef()); }
             }
         }
         return spawned;
@@ -582,7 +626,7 @@ public sealed class TriggerService : BackgroundService
         public Dictionary<string, System.Text.Json.JsonElement>? Fields { get; set; }
     }
 
-    private async Task<string> SpawnJobAsync(TriggerSource source, TriggerMatch match, CancellationToken ct)
+    private async Task<string> SpawnJobAsync(TriggerSource source, TriggerMatch match, string key, string itemKey, CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var agent = scope.ServiceProvider.GetRequiredService<LlmAgent>();
@@ -645,10 +689,21 @@ public sealed class TriggerService : BackgroundService
             $"Updated:   {match.UpdatedAt:u}\n" +
             $"\n--- body ---\n{match.Body}\n";
 
-        // Fire and forget — TriggerService doesn't await the agent's full execution; we just
-        // start it and return. The agent's persistence layer captures completion / failure.
         var jobId = state.Id;
         var sourceId = source.Id;
+
+        // Record the job id on the dedup row BEFORE reserving a slot / firing. If this throws the
+        // job hasn't started, so the caller simply releases the claim and retries next cycle.
+        await _state.AttachJobIdAsync(source.Id, key, jobId, ct).ConfigureAwait(false);
+
+        // Reserve a concurrency slot + mark the ticket in flight. Both are released in the task's
+        // finally. Done synchronously here (before Task.Run) so the poll loop's capacity and
+        // per-item checks observe them on the very next match and cycle.
+        System.Threading.Interlocked.Increment(ref _runningJobs);
+        _inFlightItems.TryAdd(itemKey, 0);
+
+        // Fire and forget — TriggerService doesn't await the agent's full execution; we just
+        // start it and return. The agent's persistence layer captures completion / failure.
         _ = Task.Run(async () =>
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -675,6 +730,11 @@ public sealed class TriggerService : BackgroundService
             {
                 sw.Stop();
                 _log.LogError(ex, "Triggered job {JobId} failed after {WallMs}ms", jobId, sw.ElapsedMilliseconds);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Decrement(ref _runningJobs);
+                _inFlightItems.TryRemove(itemKey, out _);
             }
         }, CancellationToken.None);
 

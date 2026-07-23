@@ -957,6 +957,7 @@ function renderTriggerOptions() {
   const intervalF = field("Poll interval (seconds)", { type: "number", value: t.pollIntervalSeconds ?? 120, min: 5 });
   const phraseF = field("Mention phrase", { value: t.phrase ?? "@dagger" });
   const maxF = field("Max jobs per cycle", { type: "number", value: t.maxJobsPerCycle ?? 5, min: 1 });
+  const maxConcurrentF = field("Max concurrent jobs", { type: "number", value: t.maxConcurrentJobs ?? 3, min: 1 });
   const autoResumeF = field("Max auto-resume attempts (0 = leave orphaned jobs paused)", { type: "number", value: t.maxAutoResumeAttempts ?? 3, min: 0 });
   const authorsF = field("Allowed authors (comma-separated; blank = anyone)", {
     value: (t.allowedAuthors || []).join(", "),
@@ -971,7 +972,8 @@ function renderTriggerOptions() {
 
   form.appendChild(el("div", { class: "row-2" }, enabledF.wrap, intervalF.wrap));
   form.appendChild(phraseF.wrap);
-  form.appendChild(el("div", { class: "row-2" }, maxF.wrap, autoResumeF.wrap));
+  form.appendChild(el("div", { class: "row-2" }, maxF.wrap, maxConcurrentF.wrap));
+  form.appendChild(autoResumeF.wrap);
   form.appendChild(authorsF.wrap);
   form.appendChild(preWrap);
 
@@ -984,6 +986,7 @@ function renderTriggerOptions() {
       pollIntervalSeconds: Number(intervalF.inp.value) || 120,
       phrase: phraseF.inp.value,
       maxJobsPerCycle: Number(maxF.inp.value) || 5,
+      maxConcurrentJobs: Number(maxConcurrentF.inp.value) || 3,
       jobPreamble: preamble.value,
       maxAutoResumeAttempts: Number(autoResumeF.inp.value) || 0,
       allowedAuthors: authorsF.inp.value.split(",").map(s => s.trim()).filter(Boolean),

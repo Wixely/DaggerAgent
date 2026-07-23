@@ -68,6 +68,20 @@ public sealed class TriggerMatch
         return Url;
     }
 
+    /// <summary>
+    /// Item-level key (no comment id, no timestamp) identifying the underlying ticket/issue.
+    /// Unlike <see cref="MatchKey"/> (which is per-mention), this groups every mention on the same
+    /// work item so the trigger service can serialise jobs per ticket — a follow-up "@phrase"
+    /// comment won't spawn a second agent into the same repo/branch while the first is still running.
+    /// </summary>
+    public string WorkItemKey()
+    {
+        if (Number is not null) return $"gh-{Repo}-{Number}";
+        if (Iid is not null) return $"gl-{Project}-{Iid}";
+        if (Id is not null) return $"az-{Project}-{Id}";
+        return Url;
+    }
+
     /// <summary> Short human description for logs / job preambles. </summary>
     public string ShortRef()
     {

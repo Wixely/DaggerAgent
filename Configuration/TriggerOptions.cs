@@ -43,6 +43,16 @@ public sealed class TriggerOptions
     public int MaxJobsPerCycle { get; set; } = 5;
 
     /// <summary>
+    /// Maximum number of triggered jobs allowed to run <em>concurrently</em>, across all sources
+    /// and including auto-resumed orphans. <see cref="MaxJobsPerCycle"/> only caps spawns per
+    /// cycle; without this a backlog of mentions (or slow jobs spanning cycles) would accumulate
+    /// unbounded concurrent agent runs. When at capacity the poller stops spawning for the cycle
+    /// and the startup auto-resume sweep stops resuming (leftover orphans stay paused). Clamped to
+    /// a minimum of 1. Read live each cycle; a change takes effect on the next poll.
+    /// </summary>
+    public int MaxConcurrentJobs { get; set; } = 3;
+
+    /// <summary>
     /// When the agent picks up a triggered job, the seed prompt is prefixed with this.
     /// Use it to set the project context / playbook (or rely solely on dagger.md).
     /// </summary>
