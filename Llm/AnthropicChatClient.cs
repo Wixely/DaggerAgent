@@ -31,6 +31,14 @@ public sealed class AnthropicChatClient : IChatClient, IDisposable
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
 
+    // Tool results carry arbitrary tool / MCP payloads, not Anthropic wire types, so they get
+    // their own neutral serializer (Web defaults; any [JsonPropertyName] on MCP result types
+    // still wins) rather than the snake_case wire options above.
+    private static readonly JsonSerializerOptions ToolResultJsonOpts = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
     private readonly HttpClient _http;
     private readonly bool _ownsHttpClient;
     private readonly string _baseUrl;
@@ -376,7 +384,7 @@ public sealed class AnthropicChatClient : IChatClient, IDisposable
                         {
                             type = "tool_result",
                             tool_use_id = fr.CallId,
-                            content = fr.Result?.ToString() ?? "",
+                            content = SerializeToolResult(fr.Result),
                         });
                         break;
                     case DataContent dc when dc.MediaType?.StartsWith("image/") == true:
@@ -412,6 +420,26 @@ public sealed class AnthropicChatClient : IChatClient, IDisposable
         }
 
         return (sys.ToString(), result);
+    }
+
+    /// <summary>
+    /// Render a tool result for the Anthropic <c>tool_result.content</c> field. Mirrors what
+    /// MEAI's OpenAI adapter does so the model sees the same payload on either endpoint: a string
+    /// passes straight through, a <see cref="JsonElement"/> as its raw JSON, and anything else
+    /// (an MCP <c>CallToolResult</c>, a POCO, …) as JSON serialized by its RUNTIME type —
+    /// serializing via the <c>object?</c> static type would emit "{}". Falls back to
+    /// <c>ToString()</c> if serialization throws so the result is never worse than before.
+    /// </summary>
+    private static string SerializeToolResult(object? result)
+    {
+        switch (result)
+        {
+            case null: return "";
+            case string s: return s;
+            case JsonElement je: return je.GetRawText();
+        }
+        try { return JsonSerializer.Serialize(result, result.GetType(), ToolResultJsonOpts); }
+        catch { return result.ToString() ?? ""; }
     }
 
     private static List<ToolDto>? ConvertTools(IList<AITool>? tools)
