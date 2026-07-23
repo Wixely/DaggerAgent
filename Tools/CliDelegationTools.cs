@@ -221,12 +221,16 @@ public sealed class CliDelegationTools
     /// the same path before invoking — needed to pin Claude/Codex session ids to a cwd, since
     /// those CLIs scope sessions per project directory.
     /// </summary>
-    private string ResolveCwd(string? workingDirectoryOverride) =>
-        !string.IsNullOrWhiteSpace(workingDirectoryOverride)
+    private string ResolveCwd(string? workingDirectoryOverride)
+    {
+        // Precedence: explicit tool override → the current turn's ambient cwd (ToolExecutionContext,
+        // set per request so concurrent jobs don't clobber a shared global) → the sticky ToolsOptions
+        // default → the launch cwd.
+        var configured = ToolExecutionContext.WorkingDirectory ?? _toolsOptions.WorkingDirectory;
+        return !string.IsNullOrWhiteSpace(workingDirectoryOverride)
             ? workingDirectoryOverride!
-            : (!string.IsNullOrWhiteSpace(_toolsOptions.WorkingDirectory)
-                ? _toolsOptions.WorkingDirectory
-                : _launchInfo.OriginalWorkingDirectory);
+            : (!string.IsNullOrWhiteSpace(configured) ? configured : _launchInfo.OriginalWorkingDirectory);
+    }
 
     private static string FormatArgsForLog(System.Collections.ObjectModel.Collection<string> args)
     {
@@ -255,11 +259,7 @@ public sealed class CliDelegationTools
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-        var cwd = !string.IsNullOrWhiteSpace(workingDirectory)
-            ? workingDirectory!
-            : (!string.IsNullOrWhiteSpace(_toolsOptions.WorkingDirectory)
-                ? _toolsOptions.WorkingDirectory
-                : _launchInfo.OriginalWorkingDirectory);
+        var cwd = ResolveCwd(workingDirectory);
 
         var passthrough = _mcp.Servers.Where(s => s.Enabled && s.PassthroughToCli).ToList();
 

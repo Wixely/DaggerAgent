@@ -32,7 +32,7 @@ public sealed class SystemTools
     [Description("Print current working directory.")]
     private string Pwd()
     {
-        var configured = _options.WorkingDirectory;
+        var configured = ToolExecutionContext.WorkingDirectory ?? _options.WorkingDirectory;
         var root = string.IsNullOrWhiteSpace(configured)
             ? _launchInfo.OriginalWorkingDirectory
             : Path.IsPathRooted(configured)

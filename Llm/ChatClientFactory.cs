@@ -151,11 +151,13 @@ public sealed class ChatClientFactory
 
     private IChatClient CreateCliClient(CliChatClient.CliKind kind, EndpointConfig endpoint, string model, string? jobId)
     {
-        // Working dir: respect the explicit ToolsOptions override if set, otherwise the
-        // user's shell-launch cwd (NOT the exe content root). The CLI inherits this as its
-        // own cwd, so tool calls like reading files resolve against the user's project.
-        var cwd = !string.IsNullOrWhiteSpace(_toolsOptions.WorkingDirectory)
-            ? _toolsOptions.WorkingDirectory
+        // Working dir: the current turn's ambient cwd (ToolExecutionContext, set per request so
+        // concurrent CLI-endpoint turns don't share a mutable global) → the sticky ToolsOptions
+        // override → the user's shell-launch cwd (NOT the exe content root). The CLI inherits this
+        // as its own cwd, so tool calls like reading files resolve against the user's project.
+        var configuredCwd = ToolExecutionContext.WorkingDirectory ?? _toolsOptions.WorkingDirectory;
+        var cwd = !string.IsNullOrWhiteSpace(configuredCwd)
+            ? configuredCwd
             : _launchInfo.OriginalWorkingDirectory;
         var timeout = TimeSpan.FromSeconds(Math.Max(1, endpoint.RequestTimeoutSeconds));
         var binaryPath = kind switch

@@ -577,7 +577,7 @@ public sealed class FilesystemTools
 
     private string Root()
     {
-        var configured = _options.WorkingDirectory;
+        var configured = ToolExecutionContext.WorkingDirectory ?? _options.WorkingDirectory;
         if (string.IsNullOrWhiteSpace(configured)) return _launchInfo.OriginalWorkingDirectory;
         return Path.IsPathRooted(configured)
             ? Path.GetFullPath(configured)

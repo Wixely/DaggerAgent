@@ -36,7 +36,6 @@ public static class JobsStreamEndpoints
             IJobStore store,
             IOptions<OpenAIOptions> openAi,
             IOptions<EndpointsOptions> endpoints,
-            IOptions<ToolsOptions> toolsOpts,
             CancellationToken ct) =>
         {
             await store.InitializeAsync(ct).ConfigureAwait(false);
@@ -44,13 +43,11 @@ public static class JobsStreamEndpoints
             var state = agent.CreateState(model, req.System);
             if (!string.IsNullOrWhiteSpace(req.EndpointId)) state.EndpointId = req.EndpointId;
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
-            {
-                state.WorkingDirectory = req.WorkingDirectory!;
-                // The agent's filesystem tools read from ToolsOptions.WorkingDirectory each call —
-                // mirror it so this turn's tools land where the UI expects.
-                toolsOpts.Value.WorkingDirectory = req.WorkingDirectory!;
-            }
-            await StreamTurnAsync(http, agent, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                state.WorkingDirectory = req.WorkingDirectory!;   // recorded for the "resume in this dir" feature
+            // Carry this request's cwd as ambient per-turn context instead of mutating the shared
+            // ToolsOptions singleton, which two concurrent turns would clobber. Empty = no override.
+            using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
+                await StreamTurnAsync(http, agent, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
@@ -62,7 +59,6 @@ public static class JobsStreamEndpoints
             IJobStore store,
             IOptions<EndpointsOptions> endpoints,
             IOptions<OpenAIOptions> openAi,
-            IOptions<ToolsOptions> toolsOpts,
             CancellationToken ct) =>
         {
             var state = await store.LoadAsync(id, ct).ConfigureAwait(false);
@@ -80,12 +76,9 @@ public static class JobsStreamEndpoints
                 ? req.Model!
                 : ResolveModel(null, state.EndpointId, endpoints.Value, openAi.Value);
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
-            {
                 state.WorkingDirectory = req.WorkingDirectory!;
-                // Mirror onto ToolsOptions so the filesystem tools jail follows the UI's cwd.
-                toolsOpts.Value.WorkingDirectory = req.WorkingDirectory!;
-            }
-            await StreamTurnAsync(http, agent, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+            using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
+                await StreamTurnAsync(http, agent, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
