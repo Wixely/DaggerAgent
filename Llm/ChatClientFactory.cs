@@ -125,6 +125,19 @@ public sealed class ChatClientFactory
         };
     }
 
+    /// <summary>
+    /// True when <paramref name="endpointId"/> resolves to a local CLI-subprocess provider
+    /// (Claude / Codex / Copilot CLI). Those endpoints are autonomous agents that manage their
+    /// own conversation context via <c>--resume</c>, so callers like the context compressor use
+    /// this to avoid driving a whole CLI just to run a plain-text task against them.
+    /// </summary>
+    public bool IsCliEndpoint(string? endpointId)
+    {
+        var provider = ResolveEndpoint(endpointId).Provider?.Trim().ToLowerInvariant();
+        return provider is "claudecli" or "claude-cli" or "codexcli" or "codex-cli"
+                        or "copilotcli" or "copilot-cli";
+    }
+
     private IChatClient CreateAnthropicNativeClient(EndpointConfig endpoint)
     {
         if (string.IsNullOrWhiteSpace(endpoint.ApiKey))

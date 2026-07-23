@@ -176,7 +176,7 @@ public sealed class LlmAgent
         await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
 
         var rawTools = new List<AITool>();
-        rawTools.AddRange(_builtIns.ForAgent(state.Id, state.Depth));
+        rawTools.AddRange(_builtIns.ForAgent(state.Id, state.Depth, state.EndpointId, state.Model));
         rawTools.AddRange(_mcpTools.GetTools());
         rawTools = RouteTools(rawTools, userMessage, state);
 
@@ -242,7 +242,10 @@ public sealed class LlmAgent
 
         if (state.ApproxTokenCount > turnBudget.compressionThreshold)
         {
-            await _compressor.CompressAsync(state, cancellationToken).ConfigureAwait(false);
+            // Best-effort — a summariser hiccup must not fail an otherwise completed turn
+            // (mirrors the streaming path's cleanup).
+            try { await _compressor.CompressAsync(state, cancellationToken).ConfigureAwait(false); }
+            catch (Exception ex) { _log.LogWarning(ex, "Compression failed during turn cleanup for job {JobId}", state.Id); }
         }
 
         state.Status = JobStatus.Paused;
@@ -312,7 +315,7 @@ public sealed class LlmAgent
         await _jobStore.SaveAsync(state, cancellationToken).ConfigureAwait(false);
 
         var rawTools = new List<AITool>();
-        rawTools.AddRange(_builtIns.ForAgent(state.Id, state.Depth));
+        rawTools.AddRange(_builtIns.ForAgent(state.Id, state.Depth, state.EndpointId, state.Model));
         rawTools.AddRange(_mcpTools.GetTools());
         rawTools = RouteTools(rawTools, userMessage, state);
 

@@ -11,27 +11,26 @@ public sealed class SubAgentManager
 {
     private readonly IServiceProvider _services;
     private readonly AgentOptions _agentOptions;
-    private readonly OpenAIOptions _openAiOptions;
     private readonly ILogger<SubAgentManager> _log;
 
     public SubAgentManager(
         IServiceProvider services,
         IOptions<AgentOptions> agentOptions,
-        IOptions<OpenAIOptions> openAiOptions,
         ILogger<SubAgentManager> log)
     {
         _services = services;
         _agentOptions = agentOptions.Value;
-        _openAiOptions = openAiOptions.Value;
         _log = log;
     }
 
-    public async Task<string> SpawnAsync(string? parentJobId, int depth, string task, string? modelOverride, CancellationToken cancellationToken)
+    public async Task<string> SpawnAsync(string? parentJobId, int depth, string task, string? modelOverride, string? parentEndpointId, string? parentModel, CancellationToken cancellationToken)
     {
         using var scope = _services.CreateScope();
         var agent = scope.ServiceProvider.GetRequiredService<LlmAgent>();
 
-        var model = modelOverride ?? _openAiOptions.DefaultModel;
+        // Inherit the parent's model unless the caller overrides it. Empty is fine — the
+        // endpoint's own DefaultModel is applied at client-creation time.
+        var model = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride : (parentModel ?? "");
         var systemPrompt =
             "You are a sub-agent invoked by another agent. Complete the assigned task in as few " +
             "tool calls as possible, then RETURN A SHORT FINAL ANSWER as your last assistant " +
@@ -40,6 +39,10 @@ public sealed class SubAgentManager
             "unless absolutely required.";
 
         var state = agent.CreateState(model, systemPrompt, parentJobId, depth);
+        // Run the sub-agent on the SAME endpoint as its parent (not the global default) so its
+        // provider, model and cost match the job that spawned it. Null/empty keeps the existing
+        // "resolve the default endpoint" behaviour, matching a parent that never pinned one.
+        if (!string.IsNullOrWhiteSpace(parentEndpointId)) state.EndpointId = parentEndpointId;
 
         var hardTimeoutSeconds = _agentOptions.SubAgentTimeoutSeconds;
         var idleTimeoutSeconds = _agentOptions.SubAgentIdleTimeoutSeconds;

@@ -17,7 +17,7 @@ public sealed class SpawnSubagentTool
         _agentOptions = agentOptions.Value;
     }
 
-    public AITool Build(string? parentJobId, int currentDepth)
+    public AITool Build(string? parentJobId, int currentDepth, string? parentEndpointId = null, string? parentModel = null)
     {
         var maxDepth = _agentOptions.MaxSubAgentDepth;
 
@@ -36,6 +36,8 @@ public sealed class SpawnSubagentTool
                 depth: currentDepth + 1,
                 task: task,
                 modelOverride: model,
+                parentEndpointId: parentEndpointId,
+                parentModel: parentModel,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             return result;

@@ -33,6 +33,16 @@ public sealed class ContextCompressor
 
     public async Task CompressAsync(ConversationState state, CancellationToken cancellationToken = default)
     {
+        // CLI-subprocess endpoints (Claude / Codex / Copilot CLI) keep their own conversation
+        // context via --resume and don't consume DaggerAgent's history, so summarising it here
+        // would spawn an autonomous CLI agent for nothing. Skip — the CLI owns its context.
+        if (_chatClientFactory.IsCliEndpoint(state.EndpointId))
+        {
+            _log.LogDebug("Skipping compression for job {JobId}: endpoint '{EndpointId}' is a CLI provider (manages its own context).",
+                state.Id, string.IsNullOrWhiteSpace(state.EndpointId) ? "(default)" : state.EndpointId);
+            return;
+        }
+
         var history = state.History;
         if (history.Count < _options.CompressionKeepLastTurns * 2 + 2) return;
 
@@ -67,9 +77,12 @@ public sealed class ContextCompressor
         var tail = nonSystem.Skip(Math.Max(0, nonSystem.Count - keep)).ToList();
 
         var summaryPrompt = BuildSummaryPrompt(priorSummaries, toSummarise);
-        // Empty SummariserModel means "use the same model the agent is using" — ChatClientFactory.Create(null)
-        // falls back to the OpenAI.DefaultModel.
-        var summariser = _chatClientFactory.Create(string.IsNullOrWhiteSpace(_options.SummariserModel) ? null : _options.SummariserModel);
+        // Summarise on the JOB'S OWN endpoint (not the global default) so provider/model/cost
+        // line up with the turn. Empty SummariserModel means "use the same model the agent is
+        // running" (state.Model; the endpoint's DefaultModel applies if that too is empty). No
+        // jobId is passed, so this is a stateless call that never resumes/pollutes a session.
+        var summariserModel = string.IsNullOrWhiteSpace(_options.SummariserModel) ? state.Model : _options.SummariserModel;
+        var summariser = _chatClientFactory.Create(summariserModel, endpointId: state.EndpointId);
 
         var summaryMessages = new List<ChatMessage>
         {

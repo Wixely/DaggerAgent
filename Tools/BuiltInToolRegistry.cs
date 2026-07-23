@@ -44,13 +44,13 @@ public sealed class BuiltInToolRegistry
         _toolsOptions = toolsOptions.Value;
     }
 
-    public IReadOnlyList<AITool> ForAgent(string? parentJobId, int currentDepth)
+    public IReadOnlyList<AITool> ForAgent(string? parentJobId, int currentDepth, string? parentEndpointId = null, string? parentModel = null)
     {
         var tools = new List<AITool>();
         // Don't even register spawn_subagent on a sub-agent that's at the recursion limit —
         // saves a refusing tool round-trip and stops the model trying to delegate forever.
         if (currentDepth < _agentOptions.MaxSubAgentDepth)
-            tools.Add(_spawn.Build(parentJobId, currentDepth));
+            tools.Add(_spawn.Build(parentJobId, currentDepth, parentEndpointId, parentModel));
         tools.AddRange(_filesystem.Build());
         tools.AddRange(_shell.Build());
         tools.AddRange(_memory.Build(parentJobId));
