@@ -74,6 +74,8 @@ public static class AgentUiEndpoints
             if (patch.DefaultModel is not null) existing.DefaultModel = patch.DefaultModel;
             if (patch.RequestTimeoutSeconds is int t) existing.RequestTimeoutSeconds = t;
             if (patch.Enabled is bool en) existing.Enabled = en;
+            if (patch.MaxContextTokens is int mct) existing.MaxContextTokens = mct;
+            if (patch.MaxOutputTokens is int mot) existing.MaxOutputTokens = mot;
             if (patch.ClaudePermissionMode is not null) existing.ClaudePermissionMode = patch.ClaudePermissionMode;
             if (patch.ClaudeAllowedTools is not null)
             {
@@ -238,6 +240,7 @@ public static class AgentUiEndpoints
                 allowedAuthors = v.AllowedAuthors,
                 maxJobsPerCycle = v.MaxJobsPerCycle,
                 jobPreamble = v.JobPreamble,
+                maxAutoResumeAttempts = v.MaxAutoResumeAttempts,
                 sources = v.Sources.Select(ToTriggerSourceView).ToList(),
                 mcpServerNames = mcp.Value.Servers.Where(s => s.Enabled).Select(s => s.Name).ToList(),
             }, JsonOpts.Default);
@@ -258,6 +261,7 @@ public static class AgentUiEndpoints
             if (patch.Phrase is not null) v.Phrase = patch.Phrase;
             if (patch.MaxJobsPerCycle is int m && m > 0) v.MaxJobsPerCycle = m;
             if (patch.JobPreamble is not null) v.JobPreamble = patch.JobPreamble;
+            if (patch.MaxAutoResumeAttempts is int mar && mar >= 0) v.MaxAutoResumeAttempts = mar;
             if (patch.AllowedAuthors is not null)
             {
                 v.AllowedAuthors.Clear();
@@ -399,12 +403,8 @@ public static class AgentUiEndpoints
             CancellationToken ct) =>
         {
             var v = toolsOpts.Value;
-            var cwdChanged = false;
             if (patch.WorkingDirectory is not null && patch.WorkingDirectory != v.WorkingDirectory)
-            {
                 v.WorkingDirectory = patch.WorkingDirectory;
-                cwdChanged = true;
-            }
             if (patch.AllowAnyPath is bool ap) v.AllowAnyPath = ap;
             if (patch.ReadOnly is bool ro) v.ReadOnly = ro;
             if (patch.AllowWrite is bool aw) v.AllowWrite = aw;
@@ -421,15 +421,12 @@ public static class AgentUiEndpoints
             if (patch.ClaudeCliPath is not null) v.ClaudeCliPath = patch.ClaudeCliPath;
             if (patch.CodexCliPath is not null) v.CodexCliPath = patch.CodexCliPath;
             if (patch.CopilotCliPath is not null) v.CopilotCliPath = patch.CopilotCliPath;
-            // Only persist when cwd actually changed — the rest of ToolsOptions stays
-            // session-scoped (intentional: a hot toggle like AllowShell shouldn't outlive
-            // the current run). Sticky cwd survives restart so successive turns against
-            // the same project don't have to re-type the path each time.
-            if (cwdChanged)
-            {
-                try { await runtimeStore.SaveAsync(ct).ConfigureAwait(false); }
-                catch (Exception) { /* best-effort; in-memory mutation already applied */ }
-            }
+            // Persist on every save so the durable slice (cwd, CLI paths, delegation flag, and the
+            // behaviour / limit knobs — see RuntimeConfigStore) survives restart. The security
+            // permission toggles (AllowShell / AllowWrite / ReadOnly / AllowAnyPath / WritePreview)
+            // are excluded from the persisted snapshot, so they stay session-scoped regardless.
+            try { await runtimeStore.SaveAsync(ct).ConfigureAwait(false); }
+            catch (Exception) { /* best-effort; in-memory mutation already applied */ }
             return Results.Json(new ToolsSettingsView(
                 v.WorkingDirectory, v.AllowAnyPath, v.ReadOnly, v.AllowWrite, v.WritePreview,
                 v.AllowShell, v.MaxFileBytes, v.MaxResults, v.ShellTimeoutSeconds,
@@ -596,6 +593,8 @@ public static class AgentUiEndpoints
         defaultModel = e.DefaultModel,
         requestTimeoutSeconds = e.RequestTimeoutSeconds,
         enabled = e.Enabled,
+        maxContextTokens = e.MaxContextTokens,
+        maxOutputTokens = e.MaxOutputTokens,
         // CLI-flavour fields — ignored by non-CLI providers but always emitted so the UI form
         // round-trips them without losing values when switching tabs.
         claudePermissionMode = e.ClaudePermissionMode,
@@ -667,6 +666,8 @@ internal sealed record EndpointPatch(
     string? DefaultModel = null,
     int? RequestTimeoutSeconds = null,
     bool? Enabled = null,
+    int? MaxContextTokens = null,
+    int? MaxOutputTokens = null,
     // CLI-flavour fields — only meaningful when Provider=ClaudeCli / CodexCli / CopilotCli;
     // round-tripped verbatim otherwise so a tab-flip in the UI doesn't lose configured values.
     string? ClaudePermissionMode = null,
@@ -689,6 +690,7 @@ internal sealed record TriggerOptionsPatch(
     string? Phrase = null,
     int? MaxJobsPerCycle = null,
     string? JobPreamble = null,
+    int? MaxAutoResumeAttempts = null,
     IReadOnlyList<string>? AllowedAuthors = null);
 
 internal sealed record TriggerSourcePatch(

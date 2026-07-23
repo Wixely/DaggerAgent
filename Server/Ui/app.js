@@ -589,6 +589,8 @@ function renderEndpointForm(e, isNew = false) {
   const toF = field("Timeout (s)", { type: "number", value: e.requestTimeoutSeconds ?? 600 });
   const enF = field("Enabled", { type: "checkbox" });
   enF.inp.checked = e.enabled !== false;
+  const ctxF = field("Max context tokens (0 = global default)", { type: "number", value: e.maxContextTokens ?? 0 });
+  const outF = field("Max output tokens (0 = provider default)", { type: "number", value: e.maxOutputTokens ?? 0 });
 
   // CLI-flavour fields. Stored on the endpoint regardless of provider so a tab-flip in the
   // form doesn't lose them, but visually shown / hidden based on current Provider selection
@@ -646,6 +648,7 @@ function renderEndpointForm(e, isNew = false) {
   form.appendChild(urlF.wrap);
   form.appendChild(keyF.wrap);
   form.appendChild(el("div", { class: "row-2" }, modelF.wrap, toF.wrap));
+  form.appendChild(el("div", { class: "row-2" }, ctxF.wrap, outF.wrap));
   form.appendChild(enF.wrap);
   form.appendChild(claudeBlock);
   form.appendChild(codexBlock);
@@ -670,6 +673,8 @@ function renderEndpointForm(e, isNew = false) {
       defaultModel: modelF.inp.value,
       requestTimeoutSeconds: Number(toF.inp.value) || 600,
       enabled: enF.inp.checked,
+      maxContextTokens: Number(ctxF.inp.value) || 0,
+      maxOutputTokens: Number(outF.inp.value) || 0,
       claudePermissionMode: claudePermModeF.inp.value,
       claudeAllowedTools: splitList(claudeAllowedToolsF.inp.value),
       claudeDangerouslySkipPermissions: claudeSkipF.inp.checked,
@@ -952,6 +957,7 @@ function renderTriggerOptions() {
   const intervalF = field("Poll interval (seconds)", { type: "number", value: t.pollIntervalSeconds ?? 120, min: 5 });
   const phraseF = field("Mention phrase", { value: t.phrase ?? "@dagger" });
   const maxF = field("Max jobs per cycle", { type: "number", value: t.maxJobsPerCycle ?? 5, min: 1 });
+  const autoResumeF = field("Max auto-resume attempts (0 = leave orphaned jobs paused)", { type: "number", value: t.maxAutoResumeAttempts ?? 3, min: 0 });
   const authorsF = field("Allowed authors (comma-separated; blank = anyone)", {
     value: (t.allowedAuthors || []).join(", "),
     placeholder: "Wixely, dagger-bot",
@@ -964,7 +970,8 @@ function renderTriggerOptions() {
   preWrap.appendChild(preamble);
 
   form.appendChild(el("div", { class: "row-2" }, enabledF.wrap, intervalF.wrap));
-  form.appendChild(el("div", { class: "row-2" }, phraseF.wrap, maxF.wrap));
+  form.appendChild(phraseF.wrap);
+  form.appendChild(el("div", { class: "row-2" }, maxF.wrap, autoResumeF.wrap));
   form.appendChild(authorsF.wrap);
   form.appendChild(preWrap);
 
@@ -978,6 +985,7 @@ function renderTriggerOptions() {
       phrase: phraseF.inp.value,
       maxJobsPerCycle: Number(maxF.inp.value) || 5,
       jobPreamble: preamble.value,
+      maxAutoResumeAttempts: Number(autoResumeF.inp.value) || 0,
       allowedAuthors: authorsF.inp.value.split(",").map(s => s.trim()).filter(Boolean),
     };
     try {
