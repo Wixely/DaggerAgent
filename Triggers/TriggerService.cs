@@ -305,10 +305,12 @@ public sealed class TriggerService : BackgroundService
             return 0;
         }
 
-        // Advance our cursor even on empty results — otherwise we'd keep re-fetching from epoch.
-        await _state.SetLastPolledAsync(source.Id, pollStart, ct).ConfigureAwait(false);
-
-        if (matches.Count == 0) return 0;
+        if (matches.Count == 0)
+        {
+            // Advance even on empty results — otherwise we'd keep re-fetching from epoch.
+            await _state.SetLastPolledAsync(source.Id, pollStart, ct).ConfigureAwait(false);
+            return 0;
+        }
 
         // Author allowlist (empty list = allow anyone).
         var allowed = _options.AllowedAuthors.Count == 0
@@ -320,14 +322,29 @@ public sealed class TriggerService : BackgroundService
             ? EffectivePhrase(source)
             : null;
 
+        // Oldest match we fetched but did NOT durably handle (deferred by budget, capacity, an
+        // in-flight ticket, or a failed spawn we un-claimed). The cursor must not advance past it,
+        // or the next poll (querying since = pollStart) would never re-fetch it and the mention
+        // would be silently dropped. Matches we DID claim are guarded by trigger_seen, so
+        // re-fetching them next cycle is a cheap dedup no-op.
+        DateTimeOffset? oldestDeferred = null;
+        void Defer(DateTimeOffset updatedAt)
+        {
+            if (oldestDeferred is null || updatedAt < oldestDeferred) oldestDeferred = updatedAt;
+        }
+
         var spawned = 0;
         foreach (var match in matches.OrderBy(m => m.UpdatedAt))
         {
-            if (spawned >= remainingBudget) break;
+            // Processing is oldest-first, so at a budget/capacity stop this match is the oldest of
+            // the remaining (newer) ones; deferring it alone pulls the cursor back far enough to
+            // re-fetch the whole tail next cycle.
+            if (spawned >= remainingBudget) { Defer(match.UpdatedAt); break; }
             if (AtCapacity)
             {
                 _log.LogDebug("Trigger source {Source}: at concurrency cap ({Max}) — deferring remaining matches to a later cycle",
                     source.Id, EffectiveMaxConcurrent);
+                Defer(match.UpdatedAt);
                 break;
             }
             if (!allowed(match.Author)) continue;
@@ -337,7 +354,7 @@ public sealed class TriggerService : BackgroundService
             // match unclaimed so it's picked up once that job finishes, rather than racing a second
             // agent into the same repo/branch.
             var itemKey = source.Id + " " + match.WorkItemKey();
-            if (_inFlightItems.ContainsKey(itemKey)) continue;
+            if (_inFlightItems.ContainsKey(itemKey)) { Defer(match.UpdatedAt); continue; }
 
             var key = match.MatchKey();
             if (!await _state.ClaimMatchAsync(source.Id, key, ct).ConfigureAwait(false))
@@ -358,11 +375,38 @@ public sealed class TriggerService : BackgroundService
                 _log.LogError(ex, "Failed to spawn job for {Source}:{Ref}", source.Id, match.ShortRef());
                 // The job never started (spawn failed before reserving its slot) — un-claim so a
                 // later cycle can retry rather than suppressing the mention forever.
-                try { await _state.ReleaseMatchAsync(source.Id, key, ct).ConfigureAwait(false); }
+                try
+                {
+                    await _state.ReleaseMatchAsync(source.Id, key, ct).ConfigureAwait(false);
+                    Defer(match.UpdatedAt);
+                }
                 catch (Exception rex) { _log.LogWarning(rex, "Failed to release claim for {Source}:{Ref}", source.Id, match.ShortRef()); }
             }
         }
+
+        var cursor = ComputeNextCursor(pollStart, oldestDeferred, since);
+        await _state.SetLastPolledAsync(source.Id, cursor, ct).ConfigureAwait(false);
         return spawned;
+    }
+
+    /// <summary>
+    /// Next persisted cursor for a source. Normally this poll's start time, but when some fetched
+    /// matches were deferred (budget / capacity / in-flight ticket / failed spawn) it rewinds to
+    /// just before the oldest deferred match so the next poll re-fetches it — the trigger_seen
+    /// dedup skips whatever we already claimed. Backs off a second against exclusive / second-
+    /// rounded `since` semantics on the providers (guarding a MinValue change-date), and never
+    /// rewinds before the previous cursor so it can't go backwards across cycles.
+    /// </summary>
+    internal static DateTimeOffset ComputeNextCursor(DateTimeOffset pollStart, DateTimeOffset? oldestDeferred, DateTimeOffset? since)
+    {
+        var cursor = pollStart;
+        if (oldestDeferred is { } d)
+        {
+            var rewound = d > DateTimeOffset.UnixEpoch ? d - TimeSpan.FromSeconds(1) : d;
+            if (rewound < cursor) cursor = rewound;
+            if (since is { } prev && cursor < prev) cursor = prev;
+        }
+        return cursor;
     }
 
     private string EffectivePhrase(TriggerSource source) =>
