@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS ix_job_events_job_id ON job_events(job_id, id);
         await using var conn = Open();
         await conn.ExecuteAsync(@"
 INSERT INTO jobs (id, parent_id, status, model, created_at, updated_at, state_json)
-VALUES (@Id, @ParentId, @Status, @Model, @Now, @Now, @Json)
+VALUES (@Id, @ParentId, @Status, @Model, @Created, @Now, @Json)
 ON CONFLICT(id) DO UPDATE SET
     parent_id   = excluded.parent_id,
     status      = excluded.status,
@@ -102,6 +102,7 @@ ON CONFLICT(id) DO UPDATE SET
                 state.ParentId,
                 Status = state.Status.ToString(),
                 state.Model,
+                Created = state.CreatedAt.ToString("O"),
                 Now = now.ToString("O"),
                 Json = json,
             }).ConfigureAwait(false);
@@ -195,12 +196,7 @@ UPDATE jobs SET status = 'Paused', updated_at = @Now, state_json = @Json WHERE i
         return ids;
     }
 
-    private SqliteConnection Open()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
-    }
+    private SqliteConnection Open() => SqliteConnectionFactory.Open(_connectionString);
 
     private void EnsureDirectoryExists()
     {

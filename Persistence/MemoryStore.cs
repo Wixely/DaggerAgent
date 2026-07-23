@@ -145,12 +145,7 @@ SELECT id, job_id, created_at, text, embedding_json, embedding_dims, embedding_m
         return denom == 0 ? 0 : dot / denom;
     }
 
-    private SqliteConnection Open()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
-    }
+    private SqliteConnection Open() => SqliteConnectionFactory.Open(_connectionString);
 
     private static string ResolveConnectionString(string raw)
     {

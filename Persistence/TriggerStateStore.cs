@@ -82,12 +82,20 @@ UPDATE trigger_seen SET job_id = @Job WHERE source_id = @Sid AND match_key = @Ke
             new { Sid = sourceId, Key = matchKey, Job = jobId }).ConfigureAwait(false);
     }
 
-    private SqliteConnection Open()
+    /// <summary>
+    /// Un-claim a match so a later poll cycle can retry it. Called when spawning the job fails
+    /// after <see cref="ClaimMatchAsync"/> succeeded — otherwise the mention stays claimed with no
+    /// job attached and is suppressed forever.
+    /// </summary>
+    public async Task ReleaseMatchAsync(string sourceId, string matchKey, CancellationToken cancellationToken = default)
     {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
+        await using var conn = Open();
+        await conn.ExecuteAsync(
+            "DELETE FROM trigger_seen WHERE source_id = @Sid AND match_key = @Key",
+            new { Sid = sourceId, Key = matchKey }).ConfigureAwait(false);
     }
+
+    private SqliteConnection Open() => SqliteConnectionFactory.Open(_connectionString);
 
     private static string ResolveConnectionString(string raw)
     {
