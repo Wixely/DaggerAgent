@@ -12,25 +12,31 @@ namespace Daggeragent.Tools;
 
 public sealed class WebTools
 {
-    private static readonly HttpClient _http = new(new SocketsHttpHandler
-    {
-        AllowAutoRedirect = true,
-        MaxAutomaticRedirections = 5,
-    })
-    {
-        Timeout = TimeSpan.FromSeconds(30),
-    };
-
-    static WebTools()
-    {
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("DaggerAgent/1.0 (+https://github.com/Wixely/DaggerAgent)");
-    }
-
     private readonly WebOptions _options;
+    private readonly HttpClient _http;
 
     public WebTools(IOptions<WebOptions> options)
     {
         _options = options.Value;
+
+        // The SSRF guard lives in ConnectCallback (not a pre-flight DNS check) so it enforces at
+        // the socket layer: it resolves the host once and connects to that exact validated IP —
+        // never re-resolving — which closes the DNS-rebinding TOCTOU. Because the handler invokes
+        // it for every connection it opens, it also re-validates each auto-redirect hop, closing
+        // the "redirect to 169.254.169.254 / 127.0.0.1" bypass.
+        _http = new HttpClient(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 5,
+            ConnectCallback = GuardedConnectAsync,
+        })
+        {
+            // The per-request CancellationTokenSource in FetchAsync enforces the (clamped)
+            // timeout; leaving the client's own timeout infinite lets Web.MaxTimeoutSeconds
+            // actually be reached instead of a hidden 30s client cap pre-empting it.
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("DaggerAgent/1.0 (+https://github.com/Wixely/DaggerAgent)");
     }
 
     public IEnumerable<AITool> Build()
@@ -93,62 +99,26 @@ public sealed class WebTools
 
     private async Task<FetchResult> FetchAsync(string url, int maxBytes, int timeoutSeconds, CancellationToken cancellationToken)
     {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return new FetchResult(0, null, null, null, false, maxBytes, "Error: only http/https URLs are accepted.");
+        }
+
+        // Clamp agent-supplied caps to server-side policy maxes so the LLM can't override
+        // them upward to fetch gigabytes or hold connections open for minutes.
+        maxBytes = Math.Clamp(maxBytes, 1, _options.MaxResponseBytes);
+        timeoutSeconds = Math.Clamp(timeoutSeconds, 1, _options.MaxTimeoutSeconds);
+
+        // Host allow/block patterns and the private-network block are enforced in
+        // GuardedConnectAsync (the handler's ConnectCallback) so they also cover redirect hops
+        // and pin the validated IP. A rejection surfaces here wrapped in an HttpRequestException;
+        // TryUnwrapGuard restores the clean reason string.
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
         try
         {
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-            {
-                return new FetchResult(0, null, null, null, false, maxBytes, "Error: only http/https URLs are accepted.");
-            }
-
-            // Clamp agent-supplied caps to server-side policy maxes so the LLM can't override
-            // them upward to fetch gigabytes or hold connections open for minutes.
-            maxBytes = Math.Clamp(maxBytes, 1, _options.MaxResponseBytes);
-            timeoutSeconds = Math.Clamp(timeoutSeconds, 1, _options.MaxTimeoutSeconds);
-
-            // Host-pattern allowlist / blocklist (applied to the literal hostname before DNS).
-            var host = uri.Host;
-            if (_options.AllowedHostPatterns.Count > 0 &&
-                !_options.AllowedHostPatterns.Any(p => host.Contains(p, StringComparison.OrdinalIgnoreCase)))
-            {
-                return new FetchResult(0, null, null, null, false, maxBytes,
-                    $"Error: host '{host}' not in Web.AllowedHostPatterns allowlist.");
-            }
-            if (_options.BlockedHostPatterns.Any(p => host.Contains(p, StringComparison.OrdinalIgnoreCase)))
-            {
-                return new FetchResult(0, null, null, null, false, maxBytes,
-                    $"Error: host '{host}' matches Web.BlockedHostPatterns denylist.");
-            }
-
-            // Private-network guard: resolve hostname (or parse if it's already an IP literal)
-            // and reject if any candidate IP falls in a private range. Default-deny so SSRF
-            // against localhost / RFC1918 / cloud metadata requires explicit opt-in.
-            if (!_options.AllowPrivateNetworks)
-            {
-                IPAddress[] addrs;
-                try
-                {
-                    addrs = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    return new FetchResult(0, null, null, null, false, maxBytes,
-                        $"Error: DNS resolution failed for '{host}': {ex.Message}");
-                }
-                foreach (var addr in addrs)
-                {
-                    if (IsPrivateAddress(addr))
-                    {
-                        return new FetchResult(0, null, null, null, false, maxBytes,
-                            $"Error: '{host}' resolves to private network address {addr}. " +
-                            $"Set Web.AllowPrivateNetworks=true to permit.");
-                    }
-                }
-            }
-
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
             using var resp = await _http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
             await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
             var buffer = new byte[Math.Min(maxBytes, 64 * 1024)];
@@ -170,15 +140,114 @@ public sealed class WebTools
                 MaxBytes: maxBytes,
                 Error: null);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return new FetchResult(0, null, null, null, false, maxBytes, $"Error: request timed out after {timeoutSeconds}s.");
         }
         catch (Exception ex)
         {
+            // SSRF-guard rejections arrive wrapped (HttpRequestException -> WebGuardException).
+            if (TryUnwrapGuard(ex, out var guardMessage))
+                return new FetchResult(0, null, null, null, false, maxBytes, $"Error: {guardMessage}");
             return new FetchResult(0, null, null, null, false, maxBytes, $"Error: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// The handler's transport hook — the authoritative SSRF guard. Runs for every connection the
+    /// client opens, including each auto-redirect hop. Resolves the target host once and connects
+    /// to that exact validated IP (never re-resolving), so a private-range address can slip in
+    /// neither via a second DNS lookup (rebinding) nor via a redirect a pre-flight check never saw.
+    /// </summary>
+    private async ValueTask<Stream> GuardedConnectAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var host = context.DnsEndPoint.Host;
+        var port = context.DnsEndPoint.Port;
+
+        // Host allow/block patterns, re-applied to THIS hop's host so redirect targets are
+        // covered too (matching semantics unchanged: case-insensitive substring).
+        if (_options.AllowedHostPatterns.Count > 0 &&
+            !_options.AllowedHostPatterns.Any(p => host.Contains(p, StringComparison.OrdinalIgnoreCase)))
+            throw new WebGuardException($"host '{host}' not in Web.AllowedHostPatterns allowlist.");
+        if (_options.BlockedHostPatterns.Any(p => host.Contains(p, StringComparison.OrdinalIgnoreCase)))
+            throw new WebGuardException($"host '{host}' matches Web.BlockedHostPatterns denylist.");
+
+        // Resolve here (or accept an IP literal) so the address we validate is the address we
+        // connect to — no window for a second resolution to return something different.
+        IPAddress[] addresses;
+        if (IPAddress.TryParse(host, out var literal))
+        {
+            addresses = [literal];
+        }
+        else
+        {
+            try
+            {
+                addresses = await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new WebGuardException($"DNS resolution failed for '{host}': {ex.Message}");
+            }
+        }
+        if (addresses.Length == 0)
+            throw new WebGuardException($"DNS resolution returned no addresses for '{host}'.");
+
+        // Default-deny private ranges (loopback / RFC1918 / link-local incl. cloud metadata /
+        // CGNAT / benchmark / IPv6 ULA+link-local). Reject if ANY candidate is private so a
+        // mixed public+private answer can't be raced onto the private one.
+        if (!_options.AllowPrivateNetworks)
+        {
+            foreach (var addr in addresses)
+            {
+                if (IsPrivateAddress(addr))
+                    throw new WebGuardException(
+                        $"'{host}' resolves to private network address {addr}. Set Web.AllowPrivateNetworks=true to permit.");
+            }
+        }
+
+        // Connect to a validated address — pinned. Try each in turn (IPv6/IPv4 fallback).
+        List<Exception>? failures = null;
+        foreach (var addr in addresses)
+        {
+            var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try
+            {
+                await socket.ConnectAsync(new IPEndPoint(addr, port), ct).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (OperationCanceledException)
+            {
+                socket.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                socket.Dispose();
+                (failures ??= []).Add(ex);
+            }
+        }
+        throw new WebGuardException(
+            $"could not connect to '{host}': {string.Join("; ", (failures ?? []).Select(f => f.Message))}");
+    }
+
+    /// <summary>Walks the InnerException chain for a guard rejection so FetchAsync can surface its reason.</summary>
+    private static bool TryUnwrapGuard(Exception? ex, out string message)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is WebGuardException)
+            {
+                message = e.Message;
+                return true;
+            }
+        }
+        message = "";
+        return false;
+    }
+
+    /// <summary>Marks an SSRF-policy rejection raised from inside <see cref="GuardedConnectAsync"/>.</summary>
+    private sealed class WebGuardException(string message) : Exception(message);
 
     private static StringBuilder BuildHeader(FetchResult fetch, string encoding)
     {
