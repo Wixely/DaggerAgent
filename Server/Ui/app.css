@@ -65,10 +65,35 @@ body { font-feature-settings: "ss01"; }
   font-size: 0.85rem;
 }
 .job-list .job-item:hover { background: var(--bs-tertiary-bg); }
-.job-list .job-item.active { background: var(--bs-tertiary-bg); border-left-color: var(--dagger-mark); }
+/* Selected job: a brand-tinted background (distinct from the neutral :hover tint above),
+   a solid brand left-bar and a bolder title, so the active job is unmistakable. */
+.job-list .job-item.active {
+  background: rgba(201, 47, 67, 0.15);
+  border-left-color: var(--dagger-mark);
+  box-shadow: inset 0 0 0 1px rgba(201, 47, 67, 0.25);
+}
+.job-list .job-item.active > span:first-child { font-weight: 600; }
+/* The job a context menu is currently acting on. */
+.job-list .job-item.context-target { outline: 1px dashed var(--dagger-mark); outline-offset: -3px; }
 .job-list .job-item.interrupted { border-left-color: var(--bs-warning); }
 .job-list .job-id { font-family: var(--bs-font-monospace); font-size: 0.75rem; color: var(--bs-secondary-color); }
 .job-list .job-status { font-size: 0.7rem; text-transform: lowercase; }
+
+/* ─────────────────────────── right-click context menu ─────────────────────────── */
+.context-menu {
+  position: fixed; z-index: 1080; min-width: 168px; padding: 4px;
+  background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
+  border-radius: 6px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28); font-size: 0.85rem;
+}
+.context-menu .cm-item {
+  display: block; width: 100%; text-align: left; padding: 6px 10px;
+  border: 0; background: transparent; color: var(--bs-body-color);
+  border-radius: 4px; cursor: pointer;
+}
+.context-menu .cm-item:hover { background: var(--bs-tertiary-bg); }
+.context-menu .cm-item.danger { color: var(--bs-danger); }
+.context-menu .cm-item.danger:hover { background: var(--bs-danger); color: #fff; }
+.context-menu .cm-sep { height: 1px; margin: 4px 2px; background: var(--bs-border-color); }
 
 /* ─────────────────────────── center pane (transcript + composer) ─────────────────────────── */
 

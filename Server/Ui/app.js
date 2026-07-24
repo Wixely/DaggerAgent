@@ -1712,6 +1712,7 @@ async function refreshJobs() {
 
 function renderJobsList() {
   const c = els.jobsList;
+  closeContextMenu();            // drop any menu anchored to a row we're about to replace
   c.replaceChildren();
   const filter = state.jobFilter.toLowerCase();
   for (const j of state.jobs) {
@@ -1724,6 +1725,12 @@ function renderJobsList() {
         + (j.jobId === state.currentJobId ? " active" : "")
         + (j.interrupted ? " interrupted" : ""),
       onclick: () => selectJob(j.jobId),
+      oncontextmenu: (ev) => showContextMenu(ev, [
+        { label: "Open", action: () => selectJob(j.jobId) },
+        ...(j.interrupted ? [{ label: "Resume", action: () => resumeJob(j.jobId) }] : []),
+        { sep: true },
+        { label: "Delete", danger: true, action: () => deleteJob(j.jobId) },
+      ], li),
     },
       el("span", {}, j.model || "?"),
       el("span", { class: "job-id" }, j.jobId.slice(0, 12)),
@@ -1742,6 +1749,54 @@ function renderJobsList() {
     }
     c.appendChild(li);
   }
+}
+
+// ── right-click context menu (job actions) ───────────────────────────────────
+// One reusable menu, rebuilt per open, positioned at the cursor and clamped to the
+// viewport. `items` is [{label, action, danger?} | {sep:true}]. Dismissed by an outside
+// mousedown, Escape, window blur/resize, or opening another menu.
+let _ctxMenu = null, _ctxAnchor = null;
+function closeContextMenu() {
+  if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
+  if (_ctxAnchor) { _ctxAnchor.classList.remove("context-target"); _ctxAnchor = null; }
+}
+function showContextMenu(ev, items, anchorEl) {
+  ev.preventDefault();
+  closeContextMenu();
+  const menu = el("div", { class: "context-menu" });
+  for (const it of items) {
+    if (it.sep) { menu.appendChild(el("div", { class: "cm-sep" })); continue; }
+    menu.appendChild(el("button", {
+      class: "cm-item" + (it.danger ? " danger" : ""),
+      type: "button",
+      onclick: () => { closeContextMenu(); it.action(); },
+    }, it.label));
+  }
+  menu.style.visibility = "hidden";              // measure off-screen, then clamp on-screen
+  document.body.appendChild(menu);
+  const x = Math.min(ev.clientX, window.innerWidth - menu.offsetWidth - 6);
+  const y = Math.min(ev.clientY, window.innerHeight - menu.offsetHeight - 6);
+  menu.style.left = Math.max(6, x) + "px";
+  menu.style.top = Math.max(6, y) + "px";
+  menu.style.visibility = "";
+  _ctxMenu = menu;
+  if (anchorEl) { anchorEl.classList.add("context-target"); _ctxAnchor = anchorEl; }
+}
+// mousedown fires for both buttons and before contextmenu/click, so it closes the current
+// menu before another right-click reopens one — and leaves clicks inside the menu alone.
+document.addEventListener("mousedown", (e) => { if (_ctxMenu && !_ctxMenu.contains(e.target)) closeContextMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeContextMenu(); });
+window.addEventListener("blur", closeContextMenu);
+window.addEventListener("resize", closeContextMenu);
+
+async function deleteJob(jobId) {
+  const short = jobId.slice(0, 12);
+  if (!confirm(`Delete job ${short}? This permanently removes the job and its history and can't be undone.`)) return;
+  try {
+    await api(`/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+    if (state.currentJobId === jobId) newJob();   // clear the transcript + selection if the open job went away
+    refreshJobs();
+  } catch (e) { alert("Delete failed: " + e.message); }
 }
 
 async function resumeJob(jobId) {
