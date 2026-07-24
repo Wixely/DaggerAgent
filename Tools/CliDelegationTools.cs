@@ -417,6 +417,11 @@ public sealed class CliDelegationTools
                         "delegate_to_claude: Claude returned is_error=true (apiStatus={ApiStatus}, sessionId={SessionId})",
                         apiStatus, sessionId ?? "(none)");
                 }
+                // Log the delegated (subscription-billed) usage for observability. Deliberately NOT
+                // added to the job's endpoint cost/token totals: that would mix a subscription
+                // subprocess's notional cost and a different model's tokens into the per-endpoint API
+                // accounting. This makes "what did the delegated agent burn" answerable from telemetry.
+                LogClaudeDelegatedUsage(doc.RootElement, jobId, sessionId);
                 if (doc.RootElement.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String)
                 {
                     var body = result.GetString() ?? "";
@@ -426,6 +431,32 @@ public sealed class CliDelegationTools
         }
         catch (JsonException) { /* fall through to raw */ }
         return trimmed;
+    }
+
+    /// <summary>
+    /// Emit an INFO line with the delegated Claude CLI's reported usage (cost + token counts from
+    /// its <c>--output-format json</c> envelope). Observability only — see the call site for why
+    /// this is not folded into the job's endpoint accounting.
+    /// </summary>
+    private void LogClaudeDelegatedUsage(JsonElement root, string jobId, string? sessionId)
+    {
+        decimal? costUsd = root.TryGetProperty("total_cost_usd", out var c)
+            && c.ValueKind == JsonValueKind.Number && c.TryGetDecimal(out var cd) ? cd : null;
+        long? inTok = null, outTok = null, cacheRead = null, cacheCreate = null;
+        if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+        {
+            inTok = TryReadLong(usage, "input_tokens");
+            outTok = TryReadLong(usage, "output_tokens");
+            cacheRead = TryReadLong(usage, "cache_read_input_tokens");
+            cacheCreate = TryReadLong(usage, "cache_creation_input_tokens");
+        }
+        int? numTurns = root.TryGetProperty("num_turns", out var nt)
+            && nt.ValueKind == JsonValueKind.Number && nt.TryGetInt32(out var ntv) ? ntv : null;
+        if (costUsd is null && inTok is null && outTok is null) return;  // nothing worth a line
+        _log.LogInformation(
+            "Delegated Claude usage (subscription-billed, NOT in job totals): job={JobId} session={Session} " +
+            "costUsd={Cost} inputTokens={In} outputTokens={Out} cacheReadTokens={CacheRead} cacheCreationTokens={CacheCreate} numTurns={Turns}",
+            jobId, sessionId ?? "(none)", costUsd, inTok, outTok, cacheRead, cacheCreate, numTurns);
     }
 
     /// <summary>
@@ -447,6 +478,7 @@ public sealed class CliDelegationTools
         string? sessionId = null;
         int? exitCode = null;
         int? premiumRequests = null;
+        long outputTokens = 0;
         int events = 0;
 
         foreach (var raw in trimmed.Split('\n'))
@@ -484,6 +516,7 @@ public sealed class CliDelegationTools
                                 if (assistantMessage.Length > 0) assistantMessage.Append('\n');
                                 assistantMessage.Append(content);
                             }
+                            outputTokens += TryReadLong(msgData, "outputTokens") ?? 0;
                         }
                         break;
 
@@ -531,6 +564,14 @@ public sealed class CliDelegationTools
                 ec2, sessionId ?? "(none)", events);
         }
 
+        // Log the delegated (subscription-billed) usage for observability — same rationale as the
+        // Claude path: recorded in telemetry, not folded into the job's endpoint cost/token totals.
+        if (premiumRequests is not null || outputTokens > 0)
+            _log.LogInformation(
+                "Delegated Copilot usage (subscription-billed, NOT in job totals): job={JobId} session={Session} " +
+                "premiumRequests={Premium} outputTokens={Out} events={Events}",
+                jobId, sessionId ?? "(none)", premiumRequests, outputTokens, events);
+
         var meta = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(sessionId))
             meta.Append("session_id=").Append(sessionId);
@@ -546,6 +587,9 @@ public sealed class CliDelegationTools
 
     private static string? TryReadStringField(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static long? TryReadLong(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l) ? l : null;
 
     private string ParseCodexResultAndStashSession(string stdout, string jobId, string cwd)
     {
