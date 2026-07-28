@@ -58,10 +58,12 @@ public static class Program
 
         // Console sink routing per mode:
         //   CLI         — route everything to stderr so `dagger.exe "..." > out.txt` only captures the reply.
+        //   ACP         — same as CLI: stdout carries only JSON-RPC protocol frames, so any log line
+        //                 on stdout would corrupt the stream the editor is parsing.
         //   Interactive — fully silenced (restricted to Fatal, and even those go to stderr) so log
         //                 lines never interleave with the streaming chat output. The file sink keeps everything.
         //   Service / WindowsService — normal: Information+ on stdout for terminal/container log capture.
-        var cliMode = mode == AppMode.Cli;
+        var cliMode = mode is AppMode.Cli or AppMode.Acp;
         var interactiveMode = mode == AppMode.Interactive;
         var consoleRestrictedLevel = interactiveMode
             ? Serilog.Events.LogEventLevel.Fatal
@@ -231,6 +233,7 @@ public static class Program
                 {
                     AppMode.Interactive => await app.Services.GetRequiredService<InteractiveRunner>().RunAsync(lifetime.ApplicationStopping).ConfigureAwait(false),
                     AppMode.Cli => await app.Services.GetRequiredService<CliRunner>().RunAsync(args, lifetime.ApplicationStopping).ConfigureAwait(false),
+                    AppMode.Acp => await app.Services.GetRequiredService<AcpRunner>().RunAsync(lifetime.ApplicationStopping).ConfigureAwait(false),
                     _ => 1,
                 };
                 Log.Information("Runner returned (mode={Mode}, exitCode={ExitCode})", mode, exitCode);
@@ -301,6 +304,7 @@ public static class Program
 
         builder.Services.AddSingleton<InteractiveRunner>();
         builder.Services.AddSingleton<CliRunner>();
+        builder.Services.AddSingleton<AcpRunner>();
 
         builder.Services.AddSingleton<TriggerStateStore>();
         // Register as a singleton AND a hosted service via the same instance — the singleton

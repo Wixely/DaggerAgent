@@ -31,6 +31,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Wixely/acp-csharp fork (sibling checkout) — carries the agent-side send API and
+         read-loop fixes until they land upstream in the AgentClientProtocol NuGet package. -->
+    <ProjectReference Include="..\acp-csharp\src\AgentClientProtocol\AgentClientProtocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.72" />
     <PackageReference Include="DiffPlex" Version="1.9.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />

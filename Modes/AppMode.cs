@@ -6,4 +6,5 @@ public enum AppMode
     Cli,
     Service,
     WindowsService,
+    Acp,
 }

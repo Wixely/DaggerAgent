@@ -4,6 +4,7 @@ public static class ModeDetector
 {
     private static readonly HashSet<string> ServeAliases = new(StringComparer.OrdinalIgnoreCase) { "serve", "service", "--serve", "--service" };
     private static readonly HashSet<string> RunAliases = new(StringComparer.OrdinalIgnoreCase) { "run", "exec", "--run" };
+    private static readonly HashSet<string> AcpAliases = new(StringComparer.OrdinalIgnoreCase) { "acp", "--acp" };
 
     public static AppMode Detect(string[] args, bool isWindowsService)
     {
@@ -13,6 +14,7 @@ public static class ModeDetector
         {
             if (ServeAliases.Contains(args[0])) return AppMode.Service;
             if (RunAliases.Contains(args[0])) return AppMode.Cli;
+            if (AcpAliases.Contains(args[0])) return AppMode.Acp;
             // Bare argument list with content => one-shot CLI prompt.
             if (!args[0].StartsWith("-")) return AppMode.Cli;
             if (args.Any(a => a.Equals("--prompt", StringComparison.OrdinalIgnoreCase))) return AppMode.Cli;
