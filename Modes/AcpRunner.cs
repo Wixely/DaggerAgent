@@ -92,6 +92,13 @@ internal sealed class DaggerAcpAgent : IAcpAgent
                     Image = true,
                     EmbeddedContext = true,
                 },
+                SessionCapabilities = new SessionCapabilities
+                {
+                    List = new SessionListCapabilities(),
+                    Resume = new SessionResumeCapabilities(),
+                    Close = new SessionCloseCapabilities(),
+                    Delete = new SessionDeleteCapabilities(),
+                },
             },
             AgentInfo = new Implementation
             {
@@ -216,6 +223,60 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         }
         return default;
     }
+
+    public async ValueTask<ListSessionsResponse> ListSessionsAsync(ListSessionsRequest request, CancellationToken cancellationToken = default)
+    {
+        var records = await _services.GetRequiredService<IJobStore>().ListAsync(100, cancellationToken).ConfigureAwait(false);
+        var sessions = new List<SessionInfo>();
+        foreach (var record in records)
+        {
+            if (!string.IsNullOrEmpty(record.ParentId)) continue; // sub-agent jobs aren't editor sessions
+            var (cwd, title) = ExtractSessionSummary(record.StateJson);
+            if (!string.IsNullOrWhiteSpace(request.Cwd) && !string.Equals(cwd, request.Cwd, StringComparison.OrdinalIgnoreCase))
+                continue;
+            sessions.Add(new SessionInfo
+            {
+                SessionId = record.Id,
+                Cwd = cwd ?? "",
+                Title = title,
+                UpdatedAt = record.UpdatedAt.ToString("O"),
+            });
+        }
+        return new ListSessionsResponse { Sessions = sessions.ToArray() };
+    }
+
+    public async ValueTask<ResumeSessionResponse> ResumeSessionAsync(ResumeSessionRequest request, CancellationToken cancellationToken = default)
+    {
+        // Unlike session/load, resume doesn't replay the transcript — the client kept its own view.
+        var state = await _services.GetRequiredService<IJobStore>().LoadAsync(request.SessionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new AcpException($"No such session: {request.SessionId}", null, -32602);
+
+        state.WorkingDirectory = request.Cwd;
+        _sessions[state.Id] = new AcpSession { State = state, Cwd = request.Cwd };
+        _log.LogInformation("ACP session/resume: job {JobId}", state.Id);
+        return new ResumeSessionResponse { Models = BuildModelState(state) };
+    }
+
+    public ValueTask<CloseSessionResponse> CloseSessionAsync(CloseSessionRequest request, CancellationToken cancellationToken = default)
+    {
+        // Drop the in-memory session only — the job stays persisted and listable.
+        if (_sessions.TryRemove(request.SessionId, out var session))
+            session.ActiveTurn?.Cancel();
+        _log.LogInformation("ACP session/close: job {JobId}", request.SessionId);
+        return new(new CloseSessionResponse());
+    }
+
+    public async ValueTask<DeleteSessionResponse> DeleteSessionAsync(DeleteSessionRequest request, CancellationToken cancellationToken = default)
+    {
+        if (_sessions.TryRemove(request.SessionId, out var session))
+            session.ActiveTurn?.Cancel();
+        await _services.GetRequiredService<IJobStore>().DeleteAsync(request.SessionId, cancellationToken).ConfigureAwait(false);
+        _log.LogInformation("ACP session/delete: job {JobId}", request.SessionId);
+        return new DeleteSessionResponse();
+    }
+
+    public ValueTask<ForkSessionResponse> ForkSessionAsync(ForkSessionRequest request, CancellationToken cancellationToken = default)
+        => throw new NotImplementedException(); // session/fork is unstable spec; surfaces as method-not-found
 
     public ValueTask<SetSessionModeResponse> SetSessionModeAsync(SetSessionModeRequest request, CancellationToken cancellationToken = default)
         => throw new NotImplementedException(); // surfaces as JSON-RPC method-not-found
@@ -384,5 +445,47 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         if (value is null) return null;
         try { return JsonSerializer.SerializeToElement(value); }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Pull the working directory and a display title (the first user message) out of a
+    /// persisted job's state JSON without deserializing the whole ConversationState —
+    /// session/list touches up to 100 rows and only needs these two fields.
+    /// </summary>
+    private static (string? cwd, string? title) ExtractSessionSummary(string stateJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(stateJson);
+            var root = doc.RootElement;
+            var cwd = root.TryGetProperty("WorkingDirectory", out var wd) ? wd.GetString() : null;
+            string? title = null;
+            if (root.TryGetProperty("History", out var history) && history.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var msg in history.EnumerateArray())
+                {
+                    if (!msg.TryGetProperty("Role", out var role) || role.GetString() != "user") continue;
+                    if (msg.TryGetProperty("Contents", out var contents) && contents.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var content in contents.EnumerateArray())
+                        {
+                            if (content.TryGetProperty("$type", out var type) && type.GetString() == "text" &&
+                                content.TryGetProperty("Text", out var text))
+                            {
+                                title = text.GetString();
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            if (title is { Length: > 80 }) title = title[..80] + "…";
+            return (cwd, title);
+        }
+        catch (JsonException)
+        {
+            return (null, null);
+        }
     }
 }
