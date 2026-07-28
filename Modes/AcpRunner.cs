@@ -141,7 +141,7 @@ internal sealed class DaggerAcpAgent : IAcpAgent
             _log.LogWarning("ACP client passed {Count} MCP server(s); client-supplied MCP servers are not supported yet and were ignored", request.McpServers.Length);
 
         _log.LogInformation("ACP session/new: job {JobId} (model={Model}, cwd={Cwd})", state.Id, model, request.Cwd);
-        return new NewSessionResponse { SessionId = state.Id, Models = BuildModelState(state) };
+        return new NewSessionResponse { SessionId = state.Id, Models = BuildModelState(state), ConfigOptions = BuildConfigOptions(state) };
     }
 
     public async ValueTask<LoadSessionResponse> LoadSessionAsync(LoadSessionRequest request, CancellationToken cancellationToken = default)
@@ -169,7 +169,7 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         }
 
         _log.LogInformation("ACP session/load: job {JobId} ({Turns} turns replayed)", state.Id, state.TurnsTaken);
-        return new LoadSessionResponse { Models = BuildModelState(state) };
+        return new LoadSessionResponse { Models = BuildModelState(state), ConfigOptions = BuildConfigOptions(state) };
     }
 
     public async ValueTask<PromptResponse> PromptAsync(PromptRequest request, CancellationToken cancellationToken = default)
@@ -264,7 +264,7 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         state.WorkingDirectory = request.Cwd;
         _sessions[state.Id] = new AcpSession { State = state, Cwd = request.Cwd };
         _log.LogInformation("ACP session/resume: job {JobId}", state.Id);
-        return new ResumeSessionResponse { Models = BuildModelState(state) };
+        return new ResumeSessionResponse { Models = BuildModelState(state), ConfigOptions = BuildConfigOptions(state) };
     }
 
     public ValueTask<CloseSessionResponse> CloseSessionAsync(CloseSessionRequest request, CancellationToken cancellationToken = default)
@@ -291,21 +291,47 @@ internal sealed class DaggerAcpAgent : IAcpAgent
     public ValueTask<SetSessionModeResponse> SetSessionModeAsync(SetSessionModeRequest request, CancellationToken cancellationToken = default)
         => throw new NotImplementedException(); // surfaces as JSON-RPC method-not-found
 
+    // The single config option DaggerAgent exposes: a select in the "model" category listing the
+    // enabled endpoints. It mirrors the legacy models/set_model surface (kept as a fallback for
+    // editors that haven't adopted config options) using the spec-current mechanism.
+    private const string EndpointConfigId = "endpoint";
+
     public async ValueTask<SetSessionModelResponse> SetSessionModelAsync(SetSessionModelRequest request, CancellationToken cancellationToken = default)
     {
         if (!_sessions.TryGetValue(request.SessionId, out var session))
             throw new AcpException($"No such session: {request.SessionId}", null, -32602);
 
+        await RepinEndpointAsync(session, request.ModelId, "session/set_model", cancellationToken).ConfigureAwait(false);
+        return new SetSessionModelResponse();
+    }
+
+    public async ValueTask<SetSessionConfigOptionResponse> SetConfigOptionAsync(SetSessionConfigOptionRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!_sessions.TryGetValue(request.SessionId, out var session))
+            throw new AcpException($"No such session: {request.SessionId}", null, -32602);
+
+        if (!string.Equals(request.ConfigId, EndpointConfigId, StringComparison.Ordinal))
+            throw new AcpException($"No such config option: {request.ConfigId}", null, -32602);
+
+        var valueId = request.AsValueId()
+            ?? throw new AcpException($"Config option '{request.ConfigId}' expects a select value id", null, -32602);
+
+        await RepinEndpointAsync(session, valueId, "session/set_config_option", cancellationToken).ConfigureAwait(false);
+        return new SetSessionConfigOptionResponse { ConfigOptions = BuildConfigOptions(session.State) ?? [] };
+    }
+
+    /// <summary>Point a session at a different endpoint by id, re-resolving its model, and persist.</summary>
+    private async Task RepinEndpointAsync(AcpSession session, string endpointId, string via, CancellationToken cancellationToken)
+    {
         var endpoints = _services.GetRequiredService<IOptions<EndpointsOptions>>().Value;
         var openAi = _services.GetRequiredService<IOptions<OpenAIOptions>>().Value;
-        var ep = endpoints.Items.FirstOrDefault(e => string.Equals(e.Id, request.ModelId, StringComparison.OrdinalIgnoreCase))
-            ?? throw new AcpException($"No such model/endpoint: {request.ModelId}", null, -32602);
+        var ep = endpoints.Items.FirstOrDefault(e => string.Equals(e.Id, endpointId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new AcpException($"No such model/endpoint: {endpointId}", null, -32602);
 
         session.State.EndpointId = ep.Id;
         session.State.Model = Server.JobsStreamEndpoints.ResolveModel(null, ep.Id, endpoints, openAi);
         await _services.GetRequiredService<IJobStore>().SaveAsync(session.State, cancellationToken).ConfigureAwait(false);
-        _log.LogInformation("ACP session/set_model: job {JobId} -> endpoint {EndpointId} (model={Model})", session.State.Id, ep.Id, session.State.Model);
-        return new SetSessionModelResponse();
+        _log.LogInformation("ACP {Via}: job {JobId} -> endpoint {EndpointId} (model={Model})", via, session.State.Id, ep.Id, session.State.Model);
     }
 
     /// <summary>
@@ -333,6 +359,41 @@ internal sealed class DaggerAcpAgent : IAcpAgent
                 Description = e.Provider,
             }).ToArray(),
         };
+    }
+
+    /// <summary>
+    /// The spec-current equivalent of <see cref="BuildModelState"/>: one select config option in
+    /// the <c>model</c> category listing the enabled endpoints. Returned alongside the legacy
+    /// <c>models</c> field so both old and new editors get an endpoint picker. Null when no
+    /// endpoints are configured.
+    /// </summary>
+    private SessionConfigOption[]? BuildConfigOptions(ConversationState state)
+    {
+        var endpoints = _services.GetRequiredService<IOptions<EndpointsOptions>>().Value;
+        var enabled = endpoints.Items.Where(e => e.Enabled).ToList();
+        if (enabled.Count == 0) return null;
+
+        var current = !string.IsNullOrWhiteSpace(state.EndpointId) ? state.EndpointId
+            : !string.IsNullOrWhiteSpace(endpoints.DefaultId) ? endpoints.DefaultId
+            : enabled[0].Id;
+
+        return
+        [
+            new SelectSessionConfigOption
+            {
+                Id = EndpointConfigId,
+                Name = "Endpoint",
+                Description = "The LLM endpoint this session runs on.",
+                Category = SessionConfigOptionCategories.Model,
+                CurrentValue = current,
+                Options = enabled.Select(e => new SessionConfigSelectOption
+                {
+                    Value = e.Id,
+                    Name = string.IsNullOrWhiteSpace(e.DefaultModel) ? e.Id : $"{e.Id} ({e.DefaultModel})",
+                    Description = e.Provider,
+                }).ToArray(),
+            },
+        ];
     }
 
     public ValueTask<JsonElement> ExtMethodAsync(string method, JsonElement request, CancellationToken cancellationToken = default)
