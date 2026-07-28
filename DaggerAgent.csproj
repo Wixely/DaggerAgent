@@ -31,13 +31,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Wixely/acp-csharp fork (sibling checkout) — carries the agent-side send API and
-         read-loop fixes until they land upstream in the AgentClientProtocol NuGet package. -->
-    <ProjectReference Include="..\acp-csharp\src\AgentClientProtocol\AgentClientProtocol.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.72" />
+    <!-- ACP SDK from the Wixely/acp-csharp fork, published to that repo's GitHub Packages
+         feed (see nuget.config). Requires a GitHub token with read:packages in
+         GITHUB_PACKAGES_TOKEN to restore. -->
+    <PackageReference Include="AgentClientProtocol" Version="0.2.0" />
     <PackageReference Include="DiffPlex" Version="1.9.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
