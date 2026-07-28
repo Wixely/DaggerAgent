@@ -62,6 +62,16 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         public required ConversationState State { get; init; }
         public string? Cwd { get; set; }
         public CancellationTokenSource? ActiveTurn { get; set; }
+
+        /// <summary>
+        /// Cancel the in-flight turn if any. Races with the turn's own completion, which
+        /// disposes the CTS — losing that race is fine, the turn is already over.
+        /// </summary>
+        public void TryCancelActiveTurn()
+        {
+            try { ActiveTurn?.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
     }
 
     private readonly IServiceProvider _services;
@@ -219,7 +229,7 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         if (_sessions.TryGetValue(notification.SessionId, out var session))
         {
             _log.LogInformation("ACP session/cancel: job {JobId}", notification.SessionId);
-            session.ActiveTurn?.Cancel();
+            session.TryCancelActiveTurn();
         }
         return default;
     }
@@ -261,7 +271,7 @@ internal sealed class DaggerAcpAgent : IAcpAgent
     {
         // Drop the in-memory session only — the job stays persisted and listable.
         if (_sessions.TryRemove(request.SessionId, out var session))
-            session.ActiveTurn?.Cancel();
+            session.TryCancelActiveTurn();
         _log.LogInformation("ACP session/close: job {JobId}", request.SessionId);
         return new(new CloseSessionResponse());
     }
@@ -269,7 +279,7 @@ internal sealed class DaggerAcpAgent : IAcpAgent
     public async ValueTask<DeleteSessionResponse> DeleteSessionAsync(DeleteSessionRequest request, CancellationToken cancellationToken = default)
     {
         if (_sessions.TryRemove(request.SessionId, out var session))
-            session.ActiveTurn?.Cancel();
+            session.TryCancelActiveTurn();
         await _services.GetRequiredService<IJobStore>().DeleteAsync(request.SessionId, cancellationToken).ConfigureAwait(false);
         _log.LogInformation("ACP session/delete: job {JobId}", request.SessionId);
         return new DeleteSessionResponse();
