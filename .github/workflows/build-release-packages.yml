@@ -17,6 +17,11 @@ jobs:
   publish:
     name: Publish ${{ matrix.runtime_id }} ${{ matrix.package_type }}
     runs-on: ubuntu-latest
+    # Credentials for the Wixely/acp-csharp GitHub Packages feed (see nuget.config).
+    # Same-owner GITHUB_TOKEN can read the fork's package; nuget.config reads these env vars.
+    env:
+      GITHUB_PACKAGES_USER: ${{ github.actor }}
+      GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -154,6 +159,12 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # The in-image `dotnet restore` needs the fork's package feed (nuget.config).
+          # User is a plain build-arg; the token is a BuildKit secret so it isn't baked in.
+          build-args: |
+            GITHUB_PACKAGES_USER=${{ github.actor }}
+          secrets: |
+            github_packages_token=${{ secrets.GITHUB_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

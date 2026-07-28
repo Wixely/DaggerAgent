@@ -1,8 +1,15 @@
 # syntax=docker/dockerfile:1.7
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY DaggerAgent.csproj ./
-RUN dotnet restore DaggerAgent.csproj
+# nuget.config adds the fork's GitHub Packages feed for the AgentClientProtocol package.
+# The username is a build-arg; the token is mounted as a BuildKit secret so it never lands
+# in an image layer. Both are read from the environment by nuget.config's %VAR% credentials.
+ARG GITHUB_PACKAGES_USER=""
+COPY DaggerAgent.csproj nuget.config ./
+RUN --mount=type=secret,id=github_packages_token \
+    GITHUB_PACKAGES_USER="$GITHUB_PACKAGES_USER" \
+    GITHUB_PACKAGES_TOKEN="$(cat /run/secrets/github_packages_token 2>/dev/null || true)" \
+    dotnet restore DaggerAgent.csproj
 COPY . ./
 RUN dotnet publish DaggerAgent.csproj -c Release -o /app/publish /p:UseAppHost=false
 
