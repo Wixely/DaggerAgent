@@ -28,13 +28,27 @@ public static class AgentUiEndpoints
 
         // ──────────────────────────── static assets ────────────────────────────
 
-        // Two routes, both serve the HTML shell so trailing-slash doesn't matter; sub-paths
-        // dispatch to embedded assets. The HTML uses absolute hrefs ("__BASE__/halfmoon.min.css")
-        // that we rewrite at serve time, so the basePath being configurable still works.
+        // Desktop and mobile shells share the embedded asset path. The HTML uses absolute
+        // hrefs ("__BASE__/app.css") that are rewritten at serve time, so a configurable
+        // basePath still works.
         var uiPrefix = $"{basePath}/ui";
-        group.MapGet("/ui", () => ServeIndexHtml(uiPrefix));
-        group.MapGet("/ui/{**path}", (string? path) =>
-            string.IsNullOrEmpty(path) ? ServeIndexHtml(uiPrefix) : ServeAsset(path));
+        var mobilePath = $"{basePath}/mobile";
+        group.MapGet("/ui", (HttpContext context) =>
+        {
+            context.Response.Headers["Vary"] = "User-Agent, Sec-CH-UA-Mobile";
+            return ShouldUseMobileUi(context.Request)
+                ? Results.Redirect(mobilePath)
+                : ServeIndexHtml("index.html", uiPrefix);
+        });
+        group.MapGet("/ui/{**path}", (HttpContext context, string? path) =>
+        {
+            if (!string.IsNullOrEmpty(path)) return ServeAsset(path);
+            context.Response.Headers["Vary"] = "User-Agent, Sec-CH-UA-Mobile";
+            return ShouldUseMobileUi(context.Request)
+                ? Results.Redirect(mobilePath)
+                : ServeIndexHtml("index.html", uiPrefix);
+        });
+        group.MapGet("/mobile", () => ServeIndexHtml("mobile.html", uiPrefix));
 
         // ──────────────────────────── endpoints (LLM) ────────────────────────────
 
@@ -661,12 +675,35 @@ public static class AgentUiEndpoints
         return Results.File(bytes, contentType);
     }
 
-    private static IResult ServeIndexHtml(string uiPrefix)
+    private static IResult ServeIndexHtml(string fileName, string uiPrefix)
     {
-        if (!EmbeddedAssets.TryGetUiAsset("index.html", out var bytes, out _))
+        if (!EmbeddedAssets.TryGetUiAsset(fileName, out var bytes, out _))
             return Results.NotFound();
         var html = System.Text.Encoding.UTF8.GetString(bytes).Replace("__BASE__", uiPrefix);
         return Results.Content(html, "text/html; charset=utf-8");
+    }
+
+    private static bool ShouldUseMobileUi(HttpRequest request)
+    {
+        // Keep an explicit escape hatch so a phone can still reach the full configuration UI.
+        if (request.Query.TryGetValue("desktop", out var desktop) &&
+            (desktop.ToString() == "1" || desktop.ToString().Equals("true", StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        if (request.Headers.TryGetValue("Sec-CH-UA-Mobile", out var mobileHint) &&
+            mobileHint.ToString() == "?1")
+            return true;
+
+        var userAgent = request.Headers["User-Agent"].ToString();
+        if (string.IsNullOrWhiteSpace(userAgent)) return false;
+
+        return userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("iPod", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("IEMobile", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("Mobile", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("Opera Mini", StringComparison.OrdinalIgnoreCase);
     }
 }
 

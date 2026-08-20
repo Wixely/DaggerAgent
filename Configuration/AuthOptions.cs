@@ -26,10 +26,13 @@ public sealed class AuthOptions
         "/",
         "/favicon.ico",
         "/agent/healthz",
-        // The Web UI HTML shell loads without a key; the JS then attaches the configured
+        // The Web UI HTML shells load without a key; the JS then attaches the configured
         // header to every API call. The /agent/* JSON endpoints themselves still go through
-        // the auth check when keys are configured.
+        // the auth check when keys are configured. /agent/mobile needs the same treatment as
+        // /agent/ui — it is the shell mobile browsers get redirected to, and a top-level
+        // navigation cannot carry the key header, so gating it locks phones out entirely.
         "/agent/ui",
+        "/agent/mobile",
         "/api/version",
         "/v1/models",
     };

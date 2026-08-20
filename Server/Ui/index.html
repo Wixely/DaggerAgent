@@ -7,6 +7,19 @@
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="__BASE__/halfmoon.min.css">
 <link rel="stylesheet" href="__BASE__/app.css">
+<script>
+// Server-side user-agent routing handles normal phones. This catches iPadOS and
+// other touch-first browsers that deliberately present a desktop user agent.
+(() => {
+  const params = new URLSearchParams(location.search);
+  const compactTouch = navigator.maxTouchPoints > 1
+    && matchMedia("(pointer: coarse)").matches
+    && Math.min(screen.width, screen.height) <= 1024;
+  if (!params.has("desktop") && (navigator.userAgentData?.mobile || compactTouch)) {
+    location.replace(location.pathname.replace(/\/ui\/?$/, "/mobile") + location.search);
+  }
+})();
+</script>
 </head>
 <body>
 <div class="app-shell">
