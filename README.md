@@ -39,6 +39,10 @@ dotnet run -- serve
 curl http://localhost:5090/agent/healthz
 ```
 
+Open `http://localhost:5090/agent/ui` for the web interface. Mobile browsers are sent to
+the streamlined `/agent/mobile` view automatically; add `?desktop=1` to keep the full UI
+on a phone or tablet.
+
 ## Configuration
 
 Configuration is layered: `appsettings.json` → `appsettings.{Env}.json` → `appsettings.Local.json` → environment variables (no prefix) → environment variables with `DAGGER_` prefix → command-line arguments.
