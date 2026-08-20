@@ -473,6 +473,8 @@ input:focus, select:focus { border-color: color-mix(in srgb, var(--accent) 55%, 
 
 .toast { position: fixed; z-index: 100; left: 50%; bottom: calc(112px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100% - 28px); padding: 9px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); box-shadow: 0 12px 40px rgba(0,0,0,0.3); color: var(--text); font-size: 11px; white-space: nowrap; }
 
+[hidden] { display: none !important; }
+
 @media (min-width: 761px) {
   body { background: #09090b; }
   .mobile-app { border-right: 1px solid var(--line); border-left: 1px solid var(--line); }

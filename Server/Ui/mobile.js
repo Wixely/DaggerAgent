@@ -66,6 +66,8 @@ const state = {
   lastTurn: null,
 };
 
+let apiKeyPrompt = null;
+
 function node(tag, props = {}, ...children) {
   const element = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
@@ -94,12 +96,15 @@ function authHeaders(extra = {}) {
 }
 
 function promptForKey(reason) {
-  return new Promise((resolve) => {
+  if (apiKeyPrompt) return apiKeyPrompt;
+
+  apiKeyPrompt = new Promise((resolve) => {
     els.apiKeyInput.value = getApiKey();
     els.apiKeyReason.textContent = reason || "Enter the API key configured for this Dagger server.";
     els.apiKeyDialog.showModal();
     els.apiKeyDialog.addEventListener("close", function onClose() {
       els.apiKeyDialog.removeEventListener("close", onClose);
+      apiKeyPrompt = null;
       if (els.apiKeyDialog.returnValue === "save") {
         setApiKey(els.apiKeyInput.value.trim());
         resolve(true);
@@ -108,6 +113,8 @@ function promptForKey(reason) {
       }
     });
   });
+
+  return apiKeyPrompt;
 }
 
 async function api(path, options = {}) {
@@ -529,7 +536,9 @@ async function refreshJobs() {
 
 function renderJobs() {
   const query = els.jobSearch.value.trim().toLowerCase();
-  const jobs = state.jobs.filter((job) => !query || job.jobId.toLowerCase().includes(query) || (job.model || "").toLowerCase().includes(query));
+  const jobs = state.jobs.filter((job) => typeof job?.jobId === "string" && job.jobId && (
+    !query || job.jobId.toLowerCase().includes(query) || String(job.model || "").toLowerCase().includes(query)
+  ));
   els.jobsList.replaceChildren();
   if (!jobs.length) {
     els.jobsList.appendChild(node("div", { class: "jobs-empty" }, query ? "No matching jobs." : "No jobs yet."));
