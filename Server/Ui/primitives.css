@@ -1,0 +1,82 @@
+/* Shared primitives: controls and dialog chrome used by more than one shell.
+   Extracted verbatim from mobile.css so mobile stays the reference implementation.
+   Layout belongs in the per-shell stylesheet, not here. */
+
+* { box-sizing: border-box; }
+
+button, input, select, textarea { font: inherit; }
+
+button { color: inherit; }
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-button:active { background: var(--surface-soft); transform: scale(0.96); }
+
+.eyebrow { color: var(--accent-strong); font-size: 9px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
+
+input, select {
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+input:focus, select:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.primary-button { padding: 0 15px; border: 0; border-radius: 11px; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; }
+
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.switch-row:last-child { border-bottom: 0; }
+.switch-row > span { display: grid; gap: 2px; }
+.switch-row strong { font-size: 13px; }
+.switch-row small { color: var(--muted); font-size: 10px; }
+.switch-row input { position: absolute; opacity: 0; pointer-events: none; }
+.switch-row i { position: relative; flex: 0 0 40px; width: 40px; height: 23px; border-radius: 12px; background: var(--surface-soft); transition: background 0.15s ease; }
+.switch-row i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 17px; height: 17px; border-radius: 50%; background: var(--muted); transition: transform 0.15s ease, background 0.15s ease; }
+.switch-row input:checked + i { background: var(--accent); }
+.switch-row input:checked + i::after { transform: translateX(17px); background: white; }
+
+.modal-dialog[open] { display: grid; place-items: center; padding: 18px; }
+.modal-card { width: min(100%, 390px); padding: 22px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-raised); box-shadow: 0 24px 80px rgba(0,0,0,0.42); }
+.modal-card p { margin: 9px 0 16px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.modal-card input { width: 100%; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
+.modal-actions button { min-height: 39px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--text); }
+.modal-actions .primary-button { border: 0; background: var(--accent); color: white; }
+
+.toast { position: fixed; z-index: 100; left: 50%; bottom: calc(112px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100% - 28px); padding: 9px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); box-shadow: 0 12px 40px rgba(0,0,0,0.3); color: var(--text); font-size: 11px; white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+.modal-dialog {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+}
+}
+.modal-dialog::backdrop { background: rgba(0, 0, 0, 0.58); backdrop-filter: blur(3px); }
