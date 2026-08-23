@@ -23,6 +23,19 @@ export function resolveBasePath(pathname) {
   return (pathname ?? window.location.pathname).replace(/\/(?:ui(?:\/.*)?|mobile)\/?$/, "") || "/agent";
 }
 
+// Both shells put this message straight in front of the user - desktop in alert(),
+// mobile in a toast that is white-space: nowrap on a 390px screen - so it stays short.
+// A "HTTP 400 on /agent/settings: " prefix pushes the part that matters off the edge.
+// The diagnostics ride along as properties for anything that wants them.
+function httpError(status, url, body) {
+  const text = (body || "").trim();
+  const err = new Error(text.slice(0, 180) || `Request failed (${status})`);
+  err.status = status;
+  err.url = url;
+  err.body = text;
+  return err;
+}
+
 export function createApi({ basePath, onUnauthorized }) {
   const url = (path) => (path.startsWith("/") ? `${basePath}${path}` : `${basePath}/${path}`);
 
@@ -45,10 +58,7 @@ export function createApi({ basePath, onUnauthorized }) {
       if (!(await askForKey(RETRY_REASON))) throw new Error("Unauthorized");
       return api(path, opts);
     }
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      throw new Error(`HTTP ${r.status} on ${target}: ${body.slice(0, 200)}`);
-    }
+    if (!r.ok) throw httpError(r.status, target, await r.text().catch(() => ""));
     const ct = r.headers.get("content-type") || "";
     return ct.includes("application/json") ? r.json() : r.text();
   }
@@ -65,7 +75,7 @@ export function createApi({ basePath, onUnauthorized }) {
       if (!(await askForKey(RETRY_REASON))) throw new Error("Unauthorized");
       return streamPost(path, body, handlers, signal);
     }
-    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status} on ${target}`);
+    if (!r.ok || !r.body) throw httpError(r.status, target, await r.text().catch(() => ""));
 
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
