@@ -3,7 +3,7 @@
 
 import { $, el } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
-import { renderMarkdownInto, createMarkdownScheduler } from "./core/markdown.js";
+import { createTranscript } from "./core/transcript.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -88,8 +88,6 @@ function promptForKey(reason) {
 
 const { api, streamPost } = createApi({ basePath: BASE_PATH, onUnauthorized: promptForKey });
 
-const scheduleMarkdownRender = createMarkdownScheduler(withScrollStick);
-
 function setStatus(label, status = "idle") {
   const friendly = status === "streaming" ? "Working" : status === "error" ? "Error" : status === "paused" ? "Paused" : label;
   els.status.dataset.state = status;
@@ -113,92 +111,11 @@ function emptyState() {
       el("button", { type: "button", onclick: () => fillPrompt("Find and fix the most important failing test.") }, "Fix a failing test")));
 }
 
-function clearTranscript() { els.transcript.replaceChildren(emptyState()); }
-
-function renderHistory(history) {
-  els.transcript.replaceChildren();
-  for (const message of history) {
-    if (message.role === "user") {
-      els.transcript.appendChild(el("div", { class: "msg user" }, message.text || ""));
-    } else if (message.role === "assistant") {
-      const answer = el("div", { class: "answer markdown-body" });
-      answer.dataset.raw = message.text || "";
-      renderMarkdownInto(answer, message.text || "");
-      els.transcript.appendChild(el("div", { class: "msg assistant" }, answer));
-    } else if (message.role === "tool") {
-      const details = el("details", { class: "thinking-block" },
-        el("summary", {}, "Tool result"),
-        el("pre", { class: "thinking-body" }, (message.text || "").slice(0, 1600)));
-      els.transcript.appendChild(el("div", { class: "msg assistant" }, details));
-    }
-  }
-  if (!history.length) clearTranscript();
-  els.transcript.scrollTop = els.transcript.scrollHeight;
-}
-
-function appendUserMessage(text, images) {
-  if (els.transcript.querySelector(".empty-state")) els.transcript.replaceChildren();
-  const message = el("div", { class: "msg user" });
-  if (images?.length) {
-    const strip = el("div", { class: "image-strip" });
-    for (const image of images) strip.appendChild(el("div", { class: "image-thumb" }, el("img", { src: image.dataUrl, alt: "Attached image" })));
-    message.appendChild(strip);
-  }
-  message.appendChild(document.createTextNode(text));
-  withScrollStick(() => els.transcript.appendChild(message));
-}
-
-function beginAssistantMessage() {
-  const message = el("div", { class: "msg assistant" });
-  state.toolCallNodes = {};
-  state.lastBlock = null;
-  state.lastBlockType = null;
-  state.currentFooter = el("div", { class: "msg-footer" },
-    el("button", { type: "button", onclick: () => copyMessage(message) }, "Copy"),
-    el("span", { class: "usage-stamp" }));
-  message.appendChild(state.currentFooter);
-  withScrollStick(() => els.transcript.appendChild(message));
-  state.currentMsg = message;
-}
-
-async function copyMessage(message) {
-  const text = Array.from(message.querySelectorAll(".answer, .tc-result"))
-    .map((element) => element.dataset.raw || element.textContent || "")
-    .join("\n").trim();
+async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
     showToast("Copied");
   } catch { showToast("Could not copy"); }
-}
-
-function pushSegment(element) {
-  if (!state.currentMsg || !state.currentFooter) return;
-  withScrollStick(() => state.currentMsg.insertBefore(element, state.currentFooter));
-  state.lastBlock = element;
-}
-
-function appendAnswerChunk(text) {
-  if (!state.currentMsg) return;
-  if (state.lastBlockType !== "answer") {
-    const answer = el("div", { class: "answer markdown-body" });
-    answer.dataset.raw = "";
-    pushSegment(answer);
-    state.lastBlockType = "answer";
-  }
-  state.lastBlock.dataset.raw = (state.lastBlock.dataset.raw || "") + text;
-  scheduleMarkdownRender(state.lastBlock);
-}
-
-function appendThinkingChunk(text) {
-  if (!state.currentMsg) return;
-  if (state.lastBlockType !== "thinking") {
-    const body = el("pre", { class: "thinking-body" });
-    const details = el("details", { class: "thinking-block" }, el("summary", {}, "Thinking"), body);
-    details.thinkingBody = body;
-    pushSegment(details);
-    state.lastBlockType = "thinking";
-  }
-  withScrollStick(() => state.lastBlock.thinkingBody.appendChild(document.createTextNode(text)));
 }
 
 function formatToolArgs(args) {
@@ -211,47 +128,39 @@ function formatToolArgs(args) {
   } catch { return ""; }
 }
 
-function appendToolCall(id, name, args) {
-  if (!state.currentMsg) return;
-  const tool = el("div", { class: "tool-call" },
-    el("span", { class: "tc-name" }, name || "Tool"),
-    el("span", { class: "tc-args" }, formatToolArgs(args)),
-    el("span", { class: "tc-result" }, "Running…"));
-  state.toolCallNodes[id || ""] = tool;
-  pushSegment(tool);
-  state.lastBlockType = "tool_call";
-}
+// How the mobile shell wants the shared transcript to read. Shorter labels and a
+// usage line that fits a 390px row; the machinery is core/transcript.js.
+const transcriptView = {
+  emptyState,
+  historyToolBlock: (text) => el("details", { class: "thinking-block" },
+    el("summary", {}, "Tool result"),
+    el("pre", { class: "thinking-body" }, text.slice(0, 1600))),
+  userImage: (image) => el("div", { class: "image-thumb" },
+    el("img", { src: image.dataUrl, alt: "Attached image" })),
+  copyButton: (getText) => el("button", { type: "button", onclick: () => copyText(getText()) }, "Copy"),
+  retryButton: (onClick) => el("button", { class: "retry", type: "button", onclick: onClick }, "Retry"),
+  toolName: (name) => name || "Tool",
+  toolArgs: (args) => formatToolArgs(args),
+  toolPending: "Running…",
+  toolPendingClass: "",
+  toolResult: (excerpt, length) => `${excerpt || "Complete"}${length ? ` · ${length} chars` : ""}`,
+  thinkingSummary: "Thinking",
+  usageStampClass: "usage-stamp",
+  usageText: (u) => `${u.inputTokens || 0} in · ${u.outputTokens || 0} out · ${u.costUsd ? `$${Number(u.costUsd).toFixed(4)}` : "$0"}`,
+};
 
-function appendToolResult(id, excerpt, length) {
-  const tool = state.toolCallNodes[id || ""];
-  if (!tool) return;
-  const result = tool.querySelector(".tc-result");
-  withScrollStick(() => { result.textContent = `${excerpt || "Complete"}${length ? ` · ${length} chars` : ""}`; });
-}
-
-function setUsageStamp(usage) {
-  if (!state.currentMsg) return;
-  const stamp = state.currentMsg.querySelector(".usage-stamp");
-  if (!stamp) return;
-  const cost = usage.costUsd ? `$${Number(usage.costUsd).toFixed(4)}` : "$0";
-  stamp.textContent = `${usage.inputTokens || 0} in · ${usage.outputTokens || 0} out · ${cost}`;
-}
-
-function showRetryButton() {
-  if (!state.currentFooter || !state.lastTurn || state.currentFooter.querySelector(".retry")) return;
-  state.currentFooter.insertBefore(el("button", {
-    class: "retry",
-    type: "button",
-    onclick: () => { if (!state.streaming) runTurn(state.lastTurn.prompt, state.lastTurn.images); },
-  }, "Retry"), state.currentFooter.firstChild);
-}
-
-function withScrollStick(callback) {
-  const distance = els.transcript.scrollHeight - (els.transcript.scrollTop + els.transcript.clientHeight);
-  const shouldStick = distance < 140;
-  callback();
-  if (shouldStick) els.transcript.scrollTop = els.transcript.scrollHeight;
-}
+const {
+  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
+  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
+  setUsageStamp, showRetryButton,
+} = createTranscript({
+  mount: els.transcript,
+  state,
+  view: transcriptView,
+  // A touch more slack than desktop: a thumb scroll overshoots more than a wheel does.
+  stickThreshold: 140,
+  onRetry: (turn) => runTurn(turn.prompt, turn.images),
+});
 
 function handleSseEvent(name, data) {
   switch (name) {
