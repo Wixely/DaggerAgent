@@ -3,6 +3,7 @@
 
 import { $, el } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
+import { renderMarkdownInto, createMarkdownScheduler } from "./core/markdown.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -87,30 +88,7 @@ function promptForKey(reason) {
 
 const { api, streamPost } = createApi({ basePath: BASE_PATH, onUnauthorized: promptForKey });
 
-const markdownReady = Boolean(window.marked && window.DOMPurify);
-if (markdownReady) window.marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-
-function renderMarkdownInto(element, raw) {
-  if (!markdownReady) {
-    element.textContent = raw;
-    return;
-  }
-  element.innerHTML = window.DOMPurify.sanitize(window.marked.parse(raw), { ADD_ATTR: ["target"] });
-  for (const link of element.querySelectorAll("a[href^='http']")) {
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-  }
-}
-
-const pendingRenders = new WeakSet();
-function scheduleMarkdownRender(element) {
-  if (pendingRenders.has(element)) return;
-  pendingRenders.add(element);
-  requestAnimationFrame(() => {
-    pendingRenders.delete(element);
-    withScrollStick(() => renderMarkdownInto(element, element.dataset.raw || ""));
-  });
-}
+const scheduleMarkdownRender = createMarkdownScheduler(withScrollStick);
 
 function setStatus(label, status = "idle") {
   const friendly = status === "streaming" ? "Working" : status === "error" ? "Error" : status === "paused" ? "Paused" : label;

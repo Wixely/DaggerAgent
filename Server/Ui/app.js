@@ -20,6 +20,7 @@
 
 import { $, el, escapeHtml } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
+import { renderMarkdownInto, createMarkdownScheduler } from "./core/markdown.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -253,41 +254,7 @@ function showRetryButton() {
 // markdown renderer (marked + DOMPurify, both vendored as embedded assets)
 // ───────────────────────────────────────────────────────────
 
-const markdownReady = typeof window.marked !== "undefined" && typeof window.DOMPurify !== "undefined";
-if (markdownReady) {
-  // GitHub-flavoured: linkify URLs, hard line-breaks inside paragraphs (matches what the
-  // model usually intends when it inserts a single \n), no header IDs, no mangling.
-  window.marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-}
-
-function renderMarkdownInto(node, rawText) {
-  if (!markdownReady) {
-    // Fallback: plain-text — let CSS white-space: pre-wrap handle newlines.
-    node.textContent = rawText;
-    return;
-  }
-  const html = window.marked.parse(rawText);
-  // DOMPurify strips any <script>, javascript:, on*=, etc. that the LLM might emit.
-  node.innerHTML = window.DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
-  // Open external links in a new tab so clicking doesn't unload the agent UI mid-stream.
-  for (const a of node.querySelectorAll("a[href^='http']")) {
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-  }
-}
-
-// Re-rendering markdown for every streamed token would thrash the browser, so coalesce
-// updates to one render per animation frame per answer block.
-const _pendingRender = new WeakSet();
-function scheduleMarkdownRender(node) {
-  if (_pendingRender.has(node)) return;
-  _pendingRender.add(node);
-  requestAnimationFrame(() => {
-    _pendingRender.delete(node);
-    const raw = node.dataset.raw || "";
-    withScrollStick(() => renderMarkdownInto(node, raw));
-  });
-}
+const scheduleMarkdownRender = createMarkdownScheduler(withScrollStick);
 
 function appendAnswerChunk(text) {
   if (!state.currentMsg) return;
