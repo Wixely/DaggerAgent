@@ -4,6 +4,33 @@
 
 * { box-sizing: border-box; }
 
+/* ─────────────────────────────── scrollbars ───────────────────────────────
+   Every scrollable region in both shells, in one place. Declared on * rather than
+   :root deliberately: scrollbar-color inherits its COMPUTED value, so a root
+   declaration would resolve var(--scrollbar-thumb) once and freeze it. Per-element,
+   it re-resolves, which lets the near-black code slabs below re-point the token and
+   actually get a visible thumb in the light theme.
+
+   Chrome 121+, Firefox and Safari 18.2+ take the standard properties and ignore the
+   ::-webkit- pseudo-elements; older WebKit ignores the standard properties and takes
+   the pseudo-elements. Both paths are kept in sync by the same tokens. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background-color: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb {
+  /* The transparent border plus content-box clip is what insets the thumb from the
+     gutter edge — there is no padding on a scrollbar pseudo-element to do it with. */
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: var(--scrollbar-thumb);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
+::-webkit-scrollbar-corner { background-color: var(--scrollbar-track); }
+
 button, input, select, textarea { font: inherit; }
 
 button { color: inherit; }
@@ -77,6 +104,5 @@ input:focus, select:focus { border-color: color-mix(in srgb, var(--accent) 55%, 
   border: 0;
   background: transparent;
   color: var(--text);
-}
 }
 .modal-dialog::backdrop { background: rgba(0, 0, 0, 0.58); backdrop-filter: blur(3px); }

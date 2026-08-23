@@ -197,6 +197,9 @@ button, a { -webkit-touch-callout: none; }
 .markdown-body a { color: var(--accent-strong); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .markdown-body code { padding: 0.13em 0.34em; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font: 0.84em ui-monospace, SFMono-Regular, Consolas, monospace; }
 .markdown-body pre { overflow-x: auto; margin: 0.9em 0; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; background: #09090b; }
+/* Dark in both themes, so the scrollbar cannot follow the page palette: the light
+   theme's near-black thumb would be invisible on these slabs. */
+.markdown-body pre, .write-diff { --scrollbar-thumb: rgba(255, 255, 255, 0.2); --scrollbar-thumb-hover: rgba(255, 255, 255, 0.34); }
 :root[data-theme="light"] .markdown-body pre { background: #262427; color: #f5f3ef; }
 .markdown-body pre code { padding: 0; border: 0; background: transparent; color: inherit; }
 .markdown-body blockquote { margin: 0.8em 0; padding: 1px 0 1px 12px; border-left: 2px solid var(--accent); color: var(--muted); }
@@ -311,7 +314,6 @@ button, a { -webkit-touch-callout: none; }
   border: 0;
   background: transparent;
   color: var(--text);
-}
 }
 .sheet[open] { display: flex; align-items: flex-end; justify-content: center; }
 .sheet::backdrop { background: rgba(0, 0, 0, 0.58); backdrop-filter: blur(3px); }
