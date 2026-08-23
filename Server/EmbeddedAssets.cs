@@ -47,7 +47,7 @@ public static class EmbeddedAssets
     }
 
     /// <summary>
-    /// Look up an embedded UI asset by relative path (e.g. "index.html", "halfmoon.min.css").
+    /// Look up an embedded UI asset by relative path (e.g. "index.html", "tokens.css").
     /// Maps to manifest resource "Dagger.ui.{path}" — matches the csproj
     /// EmbeddedResource glob's LogicalName transform. Subdirectory separators map to dots.
     /// Returns false if the asset isn't embedded.

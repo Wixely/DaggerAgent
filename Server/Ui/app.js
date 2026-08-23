@@ -223,6 +223,11 @@ function el(tag, props, ...children) {
   return node;
 }
 
+// Unique ids for generated form controls, so each <label> can carry a matching `for`.
+// Without it the right-pane forms hand a screen reader a pile of unnamed inputs.
+let _fieldSeq = 0;
+function fieldId(prefix) { return (prefix || "f") + "-" + (++_fieldSeq); }
+
 function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -464,7 +469,14 @@ function formatToolArgs(args) {
 // ───────────────────────────────────────────────────────────
 
 function switchTab(name) {
-  for (const btn of els.tabs) btn.classList.toggle("active", btn.dataset.tab === name);
+  for (const btn of els.tabs) {
+    const on = btn.dataset.tab === name;
+    btn.classList.toggle("active", on);
+    // Keep the ARIA state and the roving tabindex in step with the class, or the
+    // tablist announces the wrong tab and Tab lands on all eight of them.
+    btn.setAttribute("aria-selected", String(on));
+    if (on) btn.removeAttribute("tabindex"); else btn.setAttribute("tabindex", "-1");
+  }
   for (const [k, pane] of Object.entries(els.panes)) pane.classList.toggle("active", k === name);
   if (name === "endpoints") loadEndpoints();
   if (name === "mcp") loadMcpConfig();
@@ -553,26 +565,28 @@ function renderEndpointForm(e, isNew = false) {
   const form = el("form", { class: "endpoint-form" });
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
   const sel = (label, opts, currentVal) => {
+    const id = fieldId("sel");
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const s = el("select", { class: "form-select form-select-sm" });
+    wrap.appendChild(el("label", { for: id }, label));
+    const s = el("select", { class: "form-select form-select-sm", id });
     for (const o of opts) s.appendChild(el("option", { value: o }, o));
     s.value = currentVal || opts[0];
     wrap.appendChild(s);
@@ -812,19 +826,20 @@ function renderMcpForm(cfg, isNew = false) {
   const form = el("form", { class: "mcp-form endpoint-form" });
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -837,9 +852,10 @@ function renderMcpForm(cfg, isNew = false) {
   const argsF = field("Arguments (space-separated)", { value: (cfg.arguments || []).join(" ") });
   const cwdF = field("Working directory (stdio)", { value: cfg.workingDirectory || "" });
 
+  const envId = fieldId("env");
   const envWrap = el("div", {});
-  envWrap.appendChild(el("label", {}, "Env vars (KEY=VALUE per line)"));
-  const envArea = el("textarea", { class: "form-control form-control-sm", rows: 3 });
+  envWrap.appendChild(el("label", { for: envId }, "Env vars (KEY=VALUE per line)"));
+  const envArea = el("textarea", { class: "form-control form-control-sm", rows: 3, id: envId });
   envArea.value = Object.entries(cfg.environmentVariables || {}).map(([k, v]) => `${k}=${v}`).join("\n");
   envWrap.appendChild(envArea);
 
@@ -935,19 +951,20 @@ function renderTriggerOptions() {
 
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -964,9 +981,10 @@ function renderTriggerOptions() {
     placeholder: "Wixely, dagger-bot",
   });
 
+  const preId = fieldId("pre");
   const preWrap = el("div", {});
-  preWrap.appendChild(el("label", {}, "Job preamble (system context for triggered jobs)"));
-  const preamble = el("textarea", { class: "form-control form-control-sm", rows: 3 });
+  preWrap.appendChild(el("label", { for: preId }, "Job preamble (system context for triggered jobs)"));
+  const preamble = el("textarea", { class: "form-control form-control-sm", rows: 3, id: preId });
   preamble.value = t.jobPreamble ?? "";
   preWrap.appendChild(preamble);
 
@@ -1086,26 +1104,28 @@ function renderTriggerSourceForm(s, isNew = false) {
   const form = el("form", { class: "endpoint-form" });
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
   const sel = (label, opts, currentVal) => {
+    const id = fieldId("sel");
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const node = el("select", { class: "form-select form-select-sm" });
+    wrap.appendChild(el("label", { for: id }, label));
+    const node = el("select", { class: "form-select form-select-sm", id });
     for (const o of opts) {
       const optAttrs = typeof o === "string" ? { value: o } : { value: o.value };
       const optLabel = typeof o === "string" ? o : o.label;
@@ -1902,16 +1922,31 @@ function wireEvents() {
   for (const btn of els.tabs) {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   }
+  // Arrow keys move between tabs, as a tablist is expected to. The strip is a 4x2 grid,
+  // so Up/Down step a whole row; Left/Right step one and wrap.
+  const tabs = Array.from(els.tabs);
+  for (const btn of tabs) {
+    btn.addEventListener("keydown", (ev) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 4, ArrowUp: -4 }[ev.key];
+      const jump = ev.key === "Home" ? 0 : ev.key === "End" ? tabs.length - 1 : null;
+      if (step === undefined && jump === null) return;
+      ev.preventDefault();
+      const i = jump !== null ? jump
+        : (tabs.indexOf(btn) + step + tabs.length) % tabs.length;
+      switchTab(tabs[i].dataset.tab);
+      tabs[i].focus();
+    });
+  }
 
   // theme + right-pane toggles
   els.btnTheme.addEventListener("click", () => {
     const html = document.documentElement;
-    const next = html.getAttribute("data-bs-theme") === "dark" ? "light" : "dark";
-    html.setAttribute("data-bs-theme", next);
+    const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    html.setAttribute("data-theme", next);
     localStorage.setItem("daggerTheme", next);
   });
   const savedTheme = localStorage.getItem("daggerTheme");
-  if (savedTheme) document.documentElement.setAttribute("data-bs-theme", savedTheme);
+  if (savedTheme) document.documentElement.setAttribute("data-theme", savedTheme);
 
   // Side panes are drawers on phones, in-grid columns on desktop.
   // Same button → different behaviour depending on viewport.
@@ -1925,6 +1960,15 @@ function wireEvents() {
     els.leftPane.classList.remove("open");
     els.rightPane.classList.remove("open");
     syncBackdrop();
+    syncRightExpanded();
+  }
+  // The button's aria-expanded has to track whichever mechanism is in play — the drawer
+  // class on mobile, the grid-collapse class on desktop.
+  function syncRightExpanded() {
+    const open = isMobile()
+      ? els.rightPane.classList.contains("open")
+      : !els.appMain.classList.contains("collapsed-right");
+    els.btnRightToggle.setAttribute("aria-expanded", String(open));
   }
   els.btnRightToggle.addEventListener("click", () => {
     if (isMobile()) {
@@ -1934,11 +1978,13 @@ function wireEvents() {
     } else {
       els.appMain.classList.toggle("collapsed-right");
     }
+    syncRightExpanded();
   });
   els.btnLeftToggle.addEventListener("click", () => {
     els.rightPane.classList.remove("open");
     els.leftPane.classList.toggle("open");
     syncBackdrop();
+    syncRightExpanded();
   });
   els.drawerBackdrop.addEventListener("click", closeDrawers);
   // Collapse drawers automatically when the user picks something from inside them on mobile.
@@ -1947,6 +1993,7 @@ function wireEvents() {
   els.commandsList.addEventListener("click", () => { if (isMobile()) closeDrawers(); });
   // Resizing past the breakpoint shouldn't leave drawer state stuck.
   mobileQuery.addEventListener("change", closeDrawers);
+  syncRightExpanded();
 
   // toggles
   els.tPlan.addEventListener("change", () => patchSettings({ forcePlan: els.tPlan.checked }));

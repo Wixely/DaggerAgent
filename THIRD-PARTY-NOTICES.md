@@ -38,12 +38,15 @@ components, each under its own license:
 
 | Component | License |
 | --- | --- |
-| Halfmoon CSS | MIT |
 | marked.js | MIT |
 | DOMPurify | Apache-2.0 / MPL-2.0 (dual) |
 
 The license files for these components are included in the `Server/Ui/`
-directory as `halfmoon.LICENSE`, `marked.LICENSE`, and `purify.LICENSE`.
+directory as `marked.LICENSE` and `purify.LICENSE`.
+
+The stylesheets (`tokens.css`, `primitives.css`, `app.css`, `mobile.css`) are
+first-party. Earlier versions vendored Halfmoon CSS (MIT); it was removed once
+the UI stopped depending on it.
 
 ## Trademarks
 
