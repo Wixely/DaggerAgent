@@ -4,6 +4,7 @@
 import { $, el } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
 import { createTranscript } from "./core/transcript.js";
+import { createSession } from "./core/session.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -101,6 +102,7 @@ function showToast(message) {
   showToast.timer = setTimeout(() => { els.toast.hidden = true; }, 2600);
 }
 
+
 function emptyState() {
   return el("section", { class: "empty-state" },
     el("div", { class: "empty-mark", "aria-hidden": "true" }, "†"),
@@ -149,82 +151,65 @@ const transcriptView = {
   usageText: (u) => `${u.inputTokens || 0} in · ${u.outputTokens || 0} out · ${u.costUsd ? `$${Number(u.costUsd).toFixed(4)}` : "$0"}`,
 };
 
-const {
-  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
-  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
-  setUsageStamp, showRetryButton,
-} = createTranscript({
+const transcript = createTranscript({
   mount: els.transcript,
   state,
   view: transcriptView,
   // A touch more slack than desktop: a thumb scroll overshoots more than a wheel does.
   stickThreshold: 140,
-  onRetry: (turn) => runTurn(turn.prompt, turn.images),
+  // Resolved at click time, so the session below can be declared after this.
+  onRetry: (turn) => session.runTurn(turn.prompt, turn.images),
 });
 
-function handleSseEvent(name, data) {
-  switch (name) {
-    case "job":
-      state.currentJobId = data.jobId;
-      updateJobLabel();
-      break;
-    case "delta": appendAnswerChunk(data.text || ""); break;
-    case "thinking": appendThinkingChunk(data.text || ""); break;
-    case "tool_call": appendToolCall(data.id, data.name, data.args); break;
-    case "tool_result": appendToolResult(data.id, data.excerpt, data.length); break;
-    case "usage": setUsageStamp(data); break;
-    case "status": setStatus(data.cancelled ? "Stopped" : data.status || "Paused", data.cancelled ? "error" : "paused"); break;
-    case "error":
-      appendAnswerChunk(`\n\n**Error:** ${data.message || "The turn failed."}`);
-      setStatus("Error", "error");
-      showRetryButton();
-      break;
-    default: break;
-  }
-}
+const {
+  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
+  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
+  setUsageStamp, showRetryButton,
+} = transcript;
 
-async function runTurn(prompt, images) {
-  state.streaming = true;
-  state.lastTurn = { prompt, images };
-  state.abortCtrl = new AbortController();
-  els.send.hidden = true;
-  els.stop.hidden = false;
-  setStatus("Working", "streaming");
-  appendUserMessage(prompt, images);
-  beginAssistantMessage();
+// Everything the shared turn engine needs to know about this shell. Mobile hides the send
+// button rather than class-toggling it, and settles on "Ready" where desktop says "paused".
+const session = createSession({
+  api,
+  streamPost,
+  state,
+  transcript,
+  host: {
+    onTurnStart() {
+      els.send.hidden = true;
+      els.stop.hidden = false;
+      setStatus("Working", "streaming");
+    },
+    onTurnEnd() {
+      els.send.hidden = false;
+      els.stop.hidden = true;
+      if (els.status.dataset.state === "streaming") setStatus("Ready", "idle");
+      refreshJobs();
+      refreshPendingWrites();
+    },
+    onTurnError: () => setStatus("Error", "error"),
+    onJobId: () => updateJobLabel(),
+    onSseStatus: (data) => setStatus(
+      data.cancelled ? "Stopped" : data.status || "Paused",
+      data.cancelled ? "error" : "paused"),
+    formatError: (message) => `\n\n**Error:** ${message || "The turn failed."}`,
+    buildBody: (prompt, images) => ({
+      prompt,
+      model: els.model.value.trim() || null,
+      workingDirectory: els.workingDir.value.trim() || null,
+      endpointId: els.endpoint.value || null,
+      images: (images || []).map(({ mediaType, base64 }) => ({ mediaType, base64 })),
+      system: null,
+    }),
+    onQueueChange: () => renderQueue(),
+    onImagesChange: () => { renderImages(); updateSendState(); },
+    contextInputs: { workingDir: els.workingDir, endpoint: els.endpoint },
+  },
+});
 
-  const body = {
-    prompt,
-    model: els.model.value.trim() || null,
-    workingDirectory: els.workingDir.value.trim() || null,
-    endpointId: els.endpoint.value || null,
-    images: (images || []).map(({ mediaType, base64 }) => ({ mediaType, base64 })),
-    system: null,
-  };
-  const path = state.currentJobId
-    ? `/jobs/${encodeURIComponent(state.currentJobId)}/messages/stream`
-    : "/jobs/stream";
+const { runTurn, handleSseEvent, enqueue, drainQueue, addImage, loadJob } = session;
 
-  try {
-    await streamPost(path, body, handleSseEvent, state.abortCtrl.signal);
-  } catch (error) {
-    if (error.name !== "AbortError") {
-      appendAnswerChunk(`\n\n**Error:** ${error.message}`);
-      setStatus("Error", "error");
-      showRetryButton();
-    }
-  } finally {
-    state.streaming = false;
-    state.abortCtrl = null;
-    state.currentMsg = null;
-    els.send.hidden = false;
-    els.stop.hidden = true;
-    if (els.status.dataset.state === "streaming") setStatus("Ready", "idle");
-    refreshJobs();
-    refreshPendingWrites();
-    if (state.queue.length) runNextQueued();
-  }
-}
+
 
 async function submitPrompt() {
   const prompt = els.prompt.value.trim();
@@ -238,8 +223,7 @@ async function submitPrompt() {
 
   if (prompt.startsWith("/") && await handleSlashCommand(prompt)) return;
   if (state.streaming) {
-    state.queue.push({ prompt, images });
-    renderQueue();
+    enqueue(prompt, images);
     showToast("Prompt queued");
     return;
   }
@@ -268,29 +252,12 @@ async function handleSlashCommand(raw) {
   }
 }
 
-async function runNextQueued() {
-  if (state.streaming) return;
-  const next = state.queue.shift();
-  renderQueue();
-  if (next) await runTurn(next.prompt, next.images);
-}
 
 function renderQueue() {
   els.queueChip.hidden = state.queue.length === 0;
   els.queueChip.textContent = `${state.queue.length} queued · tap to clear`;
 }
 
-function addImage(file) {
-  if (!file.type.startsWith("image/")) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = String(reader.result || "");
-    state.pendingImages.push({ mediaType: file.type, base64: dataUrl.split(",")[1] || dataUrl, dataUrl });
-    renderImages();
-    updateSendState();
-  };
-  reader.readAsDataURL(file);
-}
 
 function renderImages() {
   els.imageStrip.replaceChildren();
@@ -363,10 +330,7 @@ async function selectJob(jobId) {
   setStatus("Ready", "idle");
   closeSheet(els.jobsSheet);
   try {
-    const view = await api(`/jobs/${encodeURIComponent(jobId)}`);
-    renderHistory(view.history || []);
-    if (view.workingDirectory) els.workingDir.value = view.workingDirectory;
-    if (view.endpointId && Array.from(els.endpoint.options).some((option) => option.value === view.endpointId)) els.endpoint.value = view.endpointId;
+    await loadJob(jobId);
     updateContextLabel();
   } catch (error) {
     clearTranscript();
@@ -383,7 +347,7 @@ async function refreshCurrentJob() {
 
 function newJob() {
   if (state.streaming && !confirm("Stop the current response and start a new job?")) return;
-  state.abortCtrl?.abort();
+  session.cancelTurn();
   state.currentJobId = null;
   state.queue = [];
   renderQueue();
@@ -537,7 +501,7 @@ function wireEvents() {
     }
   });
   els.send.addEventListener("click", submitPrompt);
-  els.stop.addEventListener("click", () => state.abortCtrl?.abort());
+  els.stop.addEventListener("click", () => session.cancelTurn());
   els.attach.addEventListener("click", () => els.imageInput.click());
   els.imageInput.addEventListener("change", () => {
     for (const file of els.imageInput.files) addImage(file);
