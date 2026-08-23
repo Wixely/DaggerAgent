@@ -1,9 +1,11 @@
 // Dagger Agent mobile UI. Intentionally focused on conversations; full configuration
 // stays available through the desktop UI linked from the options sheet.
 
-const BASE_PATH = window.location.pathname.replace(/\/(?:ui(?:\/.*)?|mobile)\/?$/, "") || "/agent";
+import { $, el } from "./core/dom.js";
+import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
 
-const $ = (id) => document.getElementById(id);
+const BASE_PATH = resolveBasePath();
+
 const els = {
   transcript: $("transcript"),
   status: $("status"),
@@ -66,113 +68,24 @@ const state = {
   lastTurn: null,
 };
 
-let apiKeyPrompt = null;
 
-function node(tag, props = {}, ...children) {
-  const element = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (key === "class") element.className = value;
-    else if (key === "text") element.textContent = value;
-    else if (key.startsWith("on") && typeof value === "function") element.addEventListener(key.slice(2).toLowerCase(), value);
-    else if (key === "dataset") Object.assign(element.dataset, value);
-    else if (value === true) element.setAttribute(key, "");
-    else if (value !== false && value != null) element.setAttribute(key, value);
-  }
-  for (const child of children.flat()) {
-    if (child == null || child === false) continue;
-    element.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-  }
-  return element;
-}
-
-function getApiKey() { return localStorage.getItem("daggerApiKey") || ""; }
-function setApiKey(value) { localStorage.setItem("daggerApiKey", value || ""); }
-
-function authHeaders(extra = {}) {
-  const headers = { ...extra };
-  const key = getApiKey();
-  if (key) headers["X-Api-Key"] = key;
-  return headers;
-}
-
+// Handed to createApi as its 401 handler. createApi single-flights the call, so the
+// local memo this used to keep against concurrent 401s is no longer needed.
 function promptForKey(reason) {
-  if (apiKeyPrompt) return apiKeyPrompt;
-
-  apiKeyPrompt = new Promise((resolve) => {
+  return new Promise((resolve) => {
     els.apiKeyInput.value = getApiKey();
     els.apiKeyReason.textContent = reason || "Enter the API key configured for this Dagger server.";
     els.apiKeyDialog.showModal();
     els.apiKeyDialog.addEventListener("close", function onClose() {
       els.apiKeyDialog.removeEventListener("close", onClose);
-      apiKeyPrompt = null;
-      if (els.apiKeyDialog.returnValue === "save") {
-        setApiKey(els.apiKeyInput.value.trim());
-        resolve(true);
-      } else {
-        resolve(false);
-      }
+      const saved = els.apiKeyDialog.returnValue === "save";
+      if (saved) setApiKey(els.apiKeyInput.value.trim());
+      resolve(saved);
     });
   });
-
-  return apiKeyPrompt;
 }
 
-async function api(path, options = {}) {
-  const url = `${BASE_PATH}${path.startsWith("/") ? path : `/${path}`}`;
-  const response = await fetch(url, { ...options, headers: authHeaders(options.headers) });
-  if (response.status === 401) {
-    if (await promptForKey("That key was not accepted. Check it and try again.")) return api(path, options);
-    throw new Error("Unauthorized");
-  }
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(body.slice(0, 180) || `Request failed (${response.status})`);
-  }
-  const contentType = response.headers.get("content-type") || "";
-  return contentType.includes("application/json") ? response.json() : response.text();
-}
-
-async function streamPost(path, body, handler, signal) {
-  const url = `${BASE_PATH}${path}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (response.status === 401) {
-    if (await promptForKey("That key was not accepted. Check it and try again.")) return streamPost(path, body, handler, signal);
-    throw new Error("Unauthorized");
-  }
-  if (!response.ok || !response.body) throw new Error(`Request failed (${response.status})`);
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    buffer = buffer.replaceAll("\r\n", "\n");
-    let boundary;
-    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-      const block = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      let eventName = "message";
-      let data = "";
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) eventName = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      let payload = {};
-      if (data) {
-        try { payload = JSON.parse(data); }
-        catch { payload = { raw: data }; }
-      }
-      handler(eventName, payload);
-    }
-  }
-}
+const { api, streamPost } = createApi({ basePath: BASE_PATH, onUnauthorized: promptForKey });
 
 const markdownReady = Boolean(window.marked && window.DOMPurify);
 if (markdownReady) window.marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
@@ -213,13 +126,13 @@ function showToast(message) {
 }
 
 function emptyState() {
-  return node("section", { class: "empty-state" },
-    node("div", { class: "empty-mark", "aria-hidden": "true" }, "†"),
-    node("h1", {}, "What are we building?"),
-    node("p", {}, "Describe the outcome. Dagger will plan, use tools, and keep you posted."),
-    node("div", { class: "starter-chips", "aria-label": "Example prompts" },
-      node("button", { type: "button", onclick: () => fillPrompt("Review this project and suggest the highest-impact improvement.") }, "Review this project"),
-      node("button", { type: "button", onclick: () => fillPrompt("Find and fix the most important failing test.") }, "Fix a failing test")));
+  return el("section", { class: "empty-state" },
+    el("div", { class: "empty-mark", "aria-hidden": "true" }, "†"),
+    el("h1", {}, "What are we building?"),
+    el("p", {}, "Describe the outcome. Dagger will plan, use tools, and keep you posted."),
+    el("div", { class: "starter-chips", "aria-label": "Example prompts" },
+      el("button", { type: "button", onclick: () => fillPrompt("Review this project and suggest the highest-impact improvement.") }, "Review this project"),
+      el("button", { type: "button", onclick: () => fillPrompt("Find and fix the most important failing test.") }, "Fix a failing test")));
 }
 
 function clearTranscript() { els.transcript.replaceChildren(emptyState()); }
@@ -228,17 +141,17 @@ function renderHistory(history) {
   els.transcript.replaceChildren();
   for (const message of history) {
     if (message.role === "user") {
-      els.transcript.appendChild(node("div", { class: "msg user" }, message.text || ""));
+      els.transcript.appendChild(el("div", { class: "msg user" }, message.text || ""));
     } else if (message.role === "assistant") {
-      const answer = node("div", { class: "answer markdown-body" });
+      const answer = el("div", { class: "answer markdown-body" });
       answer.dataset.raw = message.text || "";
       renderMarkdownInto(answer, message.text || "");
-      els.transcript.appendChild(node("div", { class: "msg assistant" }, answer));
+      els.transcript.appendChild(el("div", { class: "msg assistant" }, answer));
     } else if (message.role === "tool") {
-      const details = node("details", { class: "thinking-block" },
-        node("summary", {}, "Tool result"),
-        node("pre", { class: "thinking-body" }, (message.text || "").slice(0, 1600)));
-      els.transcript.appendChild(node("div", { class: "msg assistant" }, details));
+      const details = el("details", { class: "thinking-block" },
+        el("summary", {}, "Tool result"),
+        el("pre", { class: "thinking-body" }, (message.text || "").slice(0, 1600)));
+      els.transcript.appendChild(el("div", { class: "msg assistant" }, details));
     }
   }
   if (!history.length) clearTranscript();
@@ -247,10 +160,10 @@ function renderHistory(history) {
 
 function appendUserMessage(text, images) {
   if (els.transcript.querySelector(".empty-state")) els.transcript.replaceChildren();
-  const message = node("div", { class: "msg user" });
+  const message = el("div", { class: "msg user" });
   if (images?.length) {
-    const strip = node("div", { class: "image-strip" });
-    for (const image of images) strip.appendChild(node("div", { class: "image-thumb" }, node("img", { src: image.dataUrl, alt: "Attached image" })));
+    const strip = el("div", { class: "image-strip" });
+    for (const image of images) strip.appendChild(el("div", { class: "image-thumb" }, el("img", { src: image.dataUrl, alt: "Attached image" })));
     message.appendChild(strip);
   }
   message.appendChild(document.createTextNode(text));
@@ -258,13 +171,13 @@ function appendUserMessage(text, images) {
 }
 
 function beginAssistantMessage() {
-  const message = node("div", { class: "msg assistant" });
+  const message = el("div", { class: "msg assistant" });
   state.toolCallNodes = {};
   state.lastBlock = null;
   state.lastBlockType = null;
-  state.currentFooter = node("div", { class: "msg-footer" },
-    node("button", { type: "button", onclick: () => copyMessage(message) }, "Copy"),
-    node("span", { class: "usage-stamp" }));
+  state.currentFooter = el("div", { class: "msg-footer" },
+    el("button", { type: "button", onclick: () => copyMessage(message) }, "Copy"),
+    el("span", { class: "usage-stamp" }));
   message.appendChild(state.currentFooter);
   withScrollStick(() => els.transcript.appendChild(message));
   state.currentMsg = message;
@@ -289,7 +202,7 @@ function pushSegment(element) {
 function appendAnswerChunk(text) {
   if (!state.currentMsg) return;
   if (state.lastBlockType !== "answer") {
-    const answer = node("div", { class: "answer markdown-body" });
+    const answer = el("div", { class: "answer markdown-body" });
     answer.dataset.raw = "";
     pushSegment(answer);
     state.lastBlockType = "answer";
@@ -301,8 +214,8 @@ function appendAnswerChunk(text) {
 function appendThinkingChunk(text) {
   if (!state.currentMsg) return;
   if (state.lastBlockType !== "thinking") {
-    const body = node("pre", { class: "thinking-body" });
-    const details = node("details", { class: "thinking-block" }, node("summary", {}, "Thinking"), body);
+    const body = el("pre", { class: "thinking-body" });
+    const details = el("details", { class: "thinking-block" }, el("summary", {}, "Thinking"), body);
     details.thinkingBody = body;
     pushSegment(details);
     state.lastBlockType = "thinking";
@@ -322,10 +235,10 @@ function formatToolArgs(args) {
 
 function appendToolCall(id, name, args) {
   if (!state.currentMsg) return;
-  const tool = node("div", { class: "tool-call" },
-    node("span", { class: "tc-name" }, name || "Tool"),
-    node("span", { class: "tc-args" }, formatToolArgs(args)),
-    node("span", { class: "tc-result" }, "Running…"));
+  const tool = el("div", { class: "tool-call" },
+    el("span", { class: "tc-name" }, name || "Tool"),
+    el("span", { class: "tc-args" }, formatToolArgs(args)),
+    el("span", { class: "tc-result" }, "Running…"));
   state.toolCallNodes[id || ""] = tool;
   pushSegment(tool);
   state.lastBlockType = "tool_call";
@@ -348,7 +261,7 @@ function setUsageStamp(usage) {
 
 function showRetryButton() {
   if (!state.currentFooter || !state.lastTurn || state.currentFooter.querySelector(".retry")) return;
-  state.currentFooter.insertBefore(node("button", {
+  state.currentFooter.insertBefore(el("button", {
     class: "retry",
     type: "button",
     onclick: () => { if (!state.streaming) runTurn(state.lastTurn.prompt, state.lastTurn.images); },
@@ -496,9 +409,9 @@ function renderImages() {
   els.imageStrip.replaceChildren();
   els.imageStrip.hidden = state.pendingImages.length === 0;
   state.pendingImages.forEach((image, index) => {
-    els.imageStrip.appendChild(node("div", { class: "image-thumb" },
-      node("img", { src: image.dataUrl, alt: `Attachment ${index + 1}` }),
-      node("button", { type: "button", "aria-label": "Remove attachment", onclick: () => {
+    els.imageStrip.appendChild(el("div", { class: "image-thumb" },
+      el("img", { src: image.dataUrl, alt: `Attachment ${index + 1}` }),
+      el("button", { type: "button", "aria-label": "Remove attachment", onclick: () => {
         state.pendingImages.splice(index, 1);
         renderImages();
         updateSendState();
@@ -541,18 +454,18 @@ function renderJobs() {
   ));
   els.jobsList.replaceChildren();
   if (!jobs.length) {
-    els.jobsList.appendChild(node("div", { class: "jobs-empty" }, query ? "No matching jobs." : "No jobs yet."));
+    els.jobsList.appendChild(el("div", { class: "jobs-empty" }, query ? "No matching jobs." : "No jobs yet."));
     return;
   }
   for (const job of jobs) {
     const meta = [job.status, relativeTime(job.updatedAt), job.jobId.slice(0, 8)].filter(Boolean).join(" · ");
-    const actions = node("div", { class: "job-actions" });
-    if (job.interrupted) actions.appendChild(node("button", { type: "button", onclick: () => resumeJob(job.jobId) }, "Resume"));
-    actions.appendChild(node("button", { class: "delete", type: "button", "aria-label": "Delete job", onclick: () => deleteJob(job.jobId) }, "Delete"));
-    els.jobsList.appendChild(node("div", { class: `job-row${job.jobId === state.currentJobId ? " active" : ""}` },
-      node("button", { class: "job-main", type: "button", onclick: () => selectJob(job.jobId) },
-        node("span", { class: "job-title" }, job.model || "Dagger job"),
-        node("span", { class: "job-meta" }, meta)),
+    const actions = el("div", { class: "job-actions" });
+    if (job.interrupted) actions.appendChild(el("button", { type: "button", onclick: () => resumeJob(job.jobId) }, "Resume"));
+    actions.appendChild(el("button", { class: "delete", type: "button", "aria-label": "Delete job", onclick: () => deleteJob(job.jobId) }, "Delete"));
+    els.jobsList.appendChild(el("div", { class: `job-row${job.jobId === state.currentJobId ? " active" : ""}` },
+      el("button", { class: "job-main", type: "button", onclick: () => selectJob(job.jobId) },
+        el("span", { class: "job-title" }, job.model || "Dagger job"),
+        el("span", { class: "job-meta" }, meta)),
       actions));
   }
 }
@@ -618,9 +531,9 @@ async function loadEndpoints() {
     const previous = els.endpoint.value;
     els.endpoint.replaceChildren();
     const active = state.endpoints.items?.find((item) => item.id === state.endpoints.defaultId);
-    els.endpoint.appendChild(node("option", { value: "" }, active ? `Active · ${active.displayName || active.id}` : "Active default"));
+    els.endpoint.appendChild(el("option", { value: "" }, active ? `Active · ${active.displayName || active.id}` : "Active default"));
     for (const endpoint of state.endpoints.items || []) {
-      els.endpoint.appendChild(node("option", { value: endpoint.id }, endpoint.displayName || endpoint.id));
+      els.endpoint.appendChild(el("option", { value: endpoint.id }, endpoint.displayName || endpoint.id));
     }
     if (Array.from(els.endpoint.options).some((option) => option.value === previous)) els.endpoint.value = previous;
     updateContextLabel();
@@ -668,19 +581,19 @@ function renderPendingWrites(writes) {
   els.writesCount.textContent = writes.length ? `${writes.length} waiting` : "None waiting";
   els.writesList.replaceChildren();
   if (!writes.length) {
-    els.writesList.appendChild(node("div", { class: "writes-empty" }, "No staged changes. Turn on Preview writes to approve file edits before they land."));
+    els.writesList.appendChild(el("div", { class: "writes-empty" }, "No staged changes. Turn on Preview writes to approve file edits before they land."));
     return;
   }
   for (const write of writes) {
-    const details = node("details", {},
-      node("summary", {},
-        node("span", { class: "write-path" }, write.displayPath || write.absolutePath || "File change"),
-        node("span", { class: "write-size" }, `${write.oldLength || 0} → ${write.newLength || 0}`)),
-      node("pre", { class: "write-diff" }, write.unifiedDiff || "No diff available."));
-    const actions = node("div", { class: "write-actions" },
-      node("button", { class: "approve", type: "button", onclick: () => resolveWrite("confirm", write.absolutePath) }, "Approve"),
-      node("button", { type: "button", onclick: () => resolveWrite("discard", write.absolutePath) }, "Discard"));
-    els.writesList.appendChild(node("article", { class: "write-card" }, details, actions));
+    const details = el("details", {},
+      el("summary", {},
+        el("span", { class: "write-path" }, write.displayPath || write.absolutePath || "File change"),
+        el("span", { class: "write-size" }, `${write.oldLength || 0} → ${write.newLength || 0}`)),
+      el("pre", { class: "write-diff" }, write.unifiedDiff || "No diff available."));
+    const actions = el("div", { class: "write-actions" },
+      el("button", { class: "approve", type: "button", onclick: () => resolveWrite("confirm", write.absolutePath) }, "Approve"),
+      el("button", { type: "button", onclick: () => resolveWrite("discard", write.absolutePath) }, "Discard"));
+    els.writesList.appendChild(el("article", { class: "write-card" }, details, actions));
   }
 }
 
@@ -795,7 +708,7 @@ async function boot() {
     (async () => {
       try {
         const directories = await api("/working-directories");
-        els.workingDirs.replaceChildren(...directories.map((directory) => node("option", { value: directory })));
+        els.workingDirs.replaceChildren(...directories.map((directory) => el("option", { value: directory })));
         if (!els.workingDir.value && directories.length) els.workingDir.value = directories[0];
       } catch (error) { console.warn("Could not load working directories", error); }
     })(),
