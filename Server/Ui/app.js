@@ -18,23 +18,18 @@
 // 1. base path + API client
 // ───────────────────────────────────────────────────────────
 
-const UI_PATH_RE = /\/ui(?:\/.*)?$/;
-const BASE_PATH = window.location.pathname.replace(UI_PATH_RE, "") || "/agent";
+import { $, el, escapeHtml } from "./core/dom.js";
+import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
+
+const BASE_PATH = resolveBasePath();
 
 const apiKeyDialog = document.getElementById("api-key-dialog");
 const apiKeyInput = document.getElementById("api-key-input");
 
-function getApiKey() { return localStorage.getItem("daggerApiKey") || ""; }
-function setApiKey(v) { localStorage.setItem("daggerApiKey", v || ""); }
-
-function authHeaders(extra) {
-  const h = Object.assign({}, extra || {});
-  const k = getApiKey();
-  if (k) h["X-Api-Key"] = k;
-  return h;
-}
-
-async function promptForKey(reason) {
+// Handed to createApi as its 401 handler. Owning the dialog is the shell's job; the
+// client only needs to know whether a fresh key was entered. createApi single-flights
+// the call, so concurrent 401s share one dialog rather than double-calling showModal().
+function promptForKey(reason) {
   return new Promise((resolve) => {
     apiKeyInput.value = getApiKey();
     apiKeyDialog.querySelector("p").textContent = reason || "Server rejected the request. Enter the configured API key.";
@@ -51,65 +46,7 @@ async function promptForKey(reason) {
   });
 }
 
-async function api(path, opts = {}) {
-  const url = path.startsWith("/") ? `${BASE_PATH}${path}` : `${BASE_PATH}/${path}`;
-  const init = Object.assign({}, opts, { headers: authHeaders(opts.headers) });
-  const r = await fetch(url, init);
-  if (r.status === 401) {
-    const ok = await promptForKey("Server rejected the API key. Try again.");
-    if (!ok) throw new Error("Unauthorized");
-    return api(path, opts);
-  }
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    throw new Error(`HTTP ${r.status} on ${url}: ${body.slice(0, 200)}`);
-  }
-  const ct = r.headers.get("content-type") || "";
-  return ct.includes("application/json") ? r.json() : r.text();
-}
-
-function streamPost(path, body, handlers, signal) {
-  const url = path.startsWith("/") ? `${BASE_PATH}${path}` : `${BASE_PATH}/${path}`;
-  return (async () => {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
-      body: JSON.stringify(body),
-      signal,
-    });
-    if (r.status === 401) {
-      const ok = await promptForKey("Server rejected the API key. Try again.");
-      if (!ok) throw new Error("Unauthorized");
-      return streamPost(path, body, handlers, signal);
-    }
-    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status} on ${url}`);
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, nl);
-        buf = buf.slice(nl + 2);
-        let name = "message", data = "";
-        for (const line of block.split("\n")) {
-          if (line.startsWith("event:")) name = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
-        }
-        let payload = {};
-        if (data) {
-          try { payload = JSON.parse(data); }
-          catch { payload = { raw: data }; }
-        }
-        try { handlers(name, payload); }
-        catch (err) { console.error("SSE handler failed", name, err); }
-      }
-    }
-  })();
-}
+const { api, streamPost } = createApi({ basePath: BASE_PATH, onUnauthorized: promptForKey });
 
 // ───────────────────────────────────────────────────────────
 // 2. global state
@@ -138,7 +75,6 @@ const state = {
 // 3. DOM shortcuts
 // ───────────────────────────────────────────────────────────
 
-const $ = (id) => document.getElementById(id);
 const els = {
   statusPill: $("status-pill"),
   jobIdLabel: $("job-id-label"),
@@ -203,39 +139,12 @@ const els = {
   folderSelect: $("folder-select"),
 };
 
-function el(tag, props, ...children) {
-  const node = document.createElement(tag);
-  if (props) {
-    for (const [k, v] of Object.entries(props)) {
-      if (k === "class") node.className = v;
-      else if (k === "html") node.innerHTML = v;
-      else if (k === "text") node.textContent = v;
-      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2).toLowerCase(), v);
-      else if (k === "dataset") Object.assign(node.dataset, v);
-      else if (v === true) node.setAttribute(k, "");
-      else if (v !== false && v !== null && v !== undefined) node.setAttribute(k, v);
-    }
-  }
-  for (const c of children.flat()) {
-    if (c == null || c === false) continue;
-    node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-  }
-  return node;
-}
 
 // Unique ids for generated form controls, so each <label> can carry a matching `for`.
 // Without it the right-pane forms hand a screen reader a pile of unnamed inputs.
 let _fieldSeq = 0;
 function fieldId(prefix) { return (prefix || "f") + "-" + (++_fieldSeq); }
 
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("'", "&#39;");
-}
 
 // ───────────────────────────────────────────────────────────
 // 4. transcript rendering
