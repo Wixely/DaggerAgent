@@ -20,7 +20,7 @@
 
 import { $, el, escapeHtml } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
-import { renderMarkdownInto, createMarkdownScheduler } from "./core/markdown.js";
+import { createTranscript } from "./core/transcript.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -151,183 +151,54 @@ function fieldId(prefix) { return (prefix || "f") + "-" + (++_fieldSeq); }
 // 4. transcript rendering
 // ───────────────────────────────────────────────────────────
 
-function clearTranscript() {
-  els.transcript.replaceChildren(el("div", { class: "empty-state" },
+// How the desktop shell wants the shared transcript to read. The machinery lives in
+// core/transcript.js; everything here is the wording, classes and node shapes that
+// differ from mobile.
+const transcriptView = {
+  emptyState: () => el("div", { class: "empty-state" },
     // Matches the markup in index.html, so a cleared transcript looks like a fresh load.
     el("div", { class: "empty-mark", "aria-hidden": "true" }, "†"),
     el("h3", { class: "mb-2" }, "Ready when you are."),
-    el("p", { class: "text-muted" }, "Submit a prompt below to start a new job.")
-  ));
-}
-
-function renderHistory(history) {
-  els.transcript.replaceChildren();
-  for (const m of history) {
-    if (m.role === "user") {
-      els.transcript.appendChild(el("div", { class: "msg user" }, m.text));
-    } else if (m.role === "assistant") {
-      const msg = el("div", { class: "msg assistant" });
-      const ans = el("div", { class: "answer markdown-body" });
-      ans.dataset.raw = m.text || "";
-      renderMarkdownInto(ans, m.text || "");
-      msg.appendChild(ans);
-      els.transcript.appendChild(msg);
-    } else if (m.role === "tool") {
-      els.transcript.appendChild(el("div", { class: "msg assistant" },
-        el("div", { class: "tool-call" },
-          el("span", { class: "tc-name" }, "← tool result"),
-          el("span", { class: "tc-result" }, (m.text || "").slice(0, 800))
-        )));
-    }
-  }
-  // History switch — always stick to bottom.
-  els.transcript.scrollTop = els.transcript.scrollHeight;
-}
-
-function appendUserMessage(text, images) {
-  if (els.transcript.querySelector(".empty-state")) els.transcript.replaceChildren();
-  const node = el("div", { class: "msg user" });
-  if (images && images.length) {
-    const strip = el("div", { class: "image-strip" });
-    for (const img of images) {
-      strip.appendChild(el("div", { class: "img-thumb" }, el("img", { src: img.dataUrl })));
-    }
-    strip.style.display = "flex"; strip.style.marginBottom = "6px";
-    node.appendChild(strip);
-  }
-  node.appendChild(document.createTextNode(text));
-  withScrollStick(() => els.transcript.appendChild(node));
-}
-
-function beginAssistantMessage() {
-  const msg = el("div", { class: "msg assistant" });
-  state.toolCallNodes = {};
-  state.lastBlock = null;
-  state.lastBlockType = null;
-  // Footer pinned as the very last child so we can keep `insertBefore(footer)` everywhere.
-  state.currentFooter = el("div", { class: "msg-footer" },
-    el("button", {
-      class: "copy-btn",
-      onclick: () => {
-        // Prefer the raw markdown buffer when we have it (preserves syntax), fall back to
-        // the rendered text content otherwise. Tool results never have a raw buffer.
-        const text = Array.from(msg.querySelectorAll(".answer, .tc-result"))
-          .map((n) => (n.dataset && n.dataset.raw) || n.textContent || "")
-          .join("\n")
-          .trim();
-        navigator.clipboard.writeText(text);
-      },
-    }, "copy"),
-    el("span", { class: "usage-stamp text-muted" }));
-  msg.appendChild(state.currentFooter);
-  withScrollStick(() => els.transcript.appendChild(msg));
-  state.currentMsg = msg;
-}
-
-// Each segment is appended right before the footer so it stays at the end.
-function pushSegment(node) {
-  if (!state.currentMsg || !state.currentFooter) return;
-  withScrollStick(() => state.currentMsg.insertBefore(node, state.currentFooter));
-  state.lastBlock = node;
-}
-
-// Add a "retry" button to the current message's footer (next to "copy") when a turn errors.
-// Captures THIS turn's prompt/images in the closure so an old error bubble always re-sends the
-// prompt that failed on it, not whatever was typed later. No-op if already added.
-function showRetryButton() {
-  const footer = state.currentFooter;
-  if (!footer || footer.querySelector(".retry-btn")) return;
-  const turn = state.lastTurn;
-  if (!turn) return;
-  const btn = el("button", {
+    el("p", { class: "text-muted" }, "Submit a prompt below to start a new job.")),
+  historyToolBlock: (text) => el("div", { class: "tool-call" },
+    el("span", { class: "tc-name" }, "← tool result"),
+    el("span", { class: "tc-result" }, text.slice(0, 800))),
+  userImage: (img) => el("div", { class: "img-thumb" }, el("img", { src: img.dataUrl })),
+  copyButton: (getText) => el("button", {
+    class: "copy-btn",
+    onclick: () => navigator.clipboard.writeText(getText()),
+  }, "copy"),
+  retryButton: (onClick) => el("button", {
     class: "retry-btn",
     title: "Resend the previous prompt",
-    onclick: () => {
-      if (state.streaming) return;   // don't stack turns on top of a running one
-      runTurn(turn.prompt, turn.images);
-    },
-  }, "retry");
-  footer.insertBefore(btn, footer.firstChild);
-}
+    onclick: onClick,
+  }, "retry"),
+  toolName: (name) => `→ ${name}`,
+  toolArgs: (args) => {
+    const s = args ? formatToolArgs(args) : "";
+    return s ? `(${s})` : "()";
+  },
+  toolPending: "…",
+  toolPendingClass: "text-muted",
+  toolResult: (excerpt, length) => `← ${excerpt} (${length} chars)`,
+  thinkingSummary: "thinking…",
+  usageStampClass: "usage-stamp text-muted",
+  usageText: (u) => `in:${u.inputTokens} out:${u.outputTokens} think:${u.thinkingTokens} · ${u.costUsd ? `$${Number(u.costUsd).toFixed(4)}` : "$0"}`,
+};
 
-// ───────────────────────────────────────────────────────────
-// markdown renderer (marked + DOMPurify, both vendored as embedded assets)
-// ───────────────────────────────────────────────────────────
-
-const scheduleMarkdownRender = createMarkdownScheduler(withScrollStick);
-
-function appendAnswerChunk(text) {
-  if (!state.currentMsg) return;
-  if (state.lastBlockType !== "answer") {
-    const node = el("div", { class: "answer markdown-body" });
-    node.dataset.raw = "";
-    pushSegment(node);
-    state.lastBlockType = "answer";
-  }
-  // Accumulate raw markdown on the node itself so each animation frame can re-render the
-  // full buffer (marked needs the whole document to handle code fences/lists correctly).
-  state.lastBlock.dataset.raw = (state.lastBlock.dataset.raw || "") + text;
-  scheduleMarkdownRender(state.lastBlock);
-}
-
-function appendThinkingChunk(text) {
-  if (!state.currentMsg) return;
-  if (state.lastBlockType !== "thinking") {
-    const details = el("details", { class: "thinking-block" });
-    details.appendChild(el("summary", {}, "thinking…"));
-    const body = el("pre", { class: "thinking-body" });
-    details.appendChild(body);
-    details._thinkingBody = body;     // stash for fast append below
-    pushSegment(details);
-    state.lastBlockType = "thinking";
-  }
-  withScrollStick(() => state.lastBlock._thinkingBody.appendChild(document.createTextNode(text)));
-}
-
-function appendToolCall(id, name, args) {
-  if (!state.currentMsg) return;
-  const argStr = args ? formatToolArgs(args) : "";
-  const node = el("div", { class: "tool-call" },
-    el("span", { class: "tc-name" }, `→ ${name}`),
-    el("span", { class: "tc-args" }, argStr ? `(${argStr})` : "()"),
-    el("span", { class: "tc-result text-muted" }, "…")
-  );
-  state.toolCallNodes[id || ""] = node;
-  pushSegment(node);
-  state.lastBlockType = "tool_call";
-}
-
-function appendToolResult(id, excerpt, length) {
-  const node = state.toolCallNodes[id || ""];
-  if (!node) return;
-  const r = node.querySelector(".tc-result");
-  withScrollStick(() => {
-    r.textContent = `← ${excerpt} (${length} chars)`;
-    r.classList.remove("text-muted");
-  });
-}
-
-function setUsageStamp(usage) {
-  if (!state.currentMsg) return;
-  const stamp = state.currentMsg.querySelector(".usage-stamp");
-  if (!stamp) return;
-  const cost = usage.costUsd ? `$${Number(usage.costUsd).toFixed(4)}` : "$0";
-  stamp.textContent = `in:${usage.inputTokens} out:${usage.outputTokens} think:${usage.thinkingTokens} · ${cost}`;
-}
-
-// Stick to bottom only if the user was already near the bottom BEFORE the DOM grew.
-// Measuring after the change misses sticky cases because the new content pushes the
-// threshold past the limit — a tool_result that replaces 1 char with 500 chars adds
-// hundreds of pixels in one shot, and the post-change distance is already > threshold.
-// ~120px gives room for one or two streaming chunks of buffered repaint while letting
-// the user break free by deliberately scrolling further up.
-function withScrollStick(fn) {
-  const t = els.transcript;
-  const before = t.scrollHeight - (t.scrollTop + t.clientHeight);
-  const sticky = before < 120;
-  fn();
-  if (sticky) t.scrollTop = t.scrollHeight;
-}
+const {
+  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
+  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
+  setUsageStamp, showRetryButton,
+} = createTranscript({
+  mount: els.transcript,
+  state,
+  view: transcriptView,
+  // 120px leaves room for a chunk or two of buffered repaint while still letting a
+  // deliberate scroll upwards break the stick.
+  stickThreshold: 120,
+  onRetry: (turn) => runTurn(turn.prompt, turn.images),
+});
 
 function formatToolArgs(args) {
   if (typeof args === "string") return args.slice(0, 80);
@@ -341,10 +212,6 @@ function formatToolArgs(args) {
       .join(", ");
   } catch { return ""; }
 }
-
-// ───────────────────────────────────────────────────────────
-// 5. right-side tabs
-// ───────────────────────────────────────────────────────────
 
 function switchTab(name) {
   for (const btn of els.tabs) {

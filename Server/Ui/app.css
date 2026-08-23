@@ -435,6 +435,9 @@ body { font-feature-settings: "ss01"; }
 .queue-list li .q-btn:hover { color: var(--text); }
 
 .image-strip { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Was two inline styles set by appendUserMessage. display:flex duplicated the rule
+   above; the margin did not, so it moves here rather than being lost. */
+.msg.user .image-strip { margin-bottom: 6px; }
 .image-strip.is-empty { display: none; }
 .image-strip .img-thumb {
   position: relative; width: 60px; height: 60px;
