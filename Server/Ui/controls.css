@@ -83,17 +83,20 @@ textarea.form-control:focus { border-color: color-mix(in srgb, var(--accent) 55%
 }
 .form-check-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Switch: the same pill as mobile's .switch-row, driven by a checkbox. */
+/* Switch: the same pill as mobile's .switch-row, driven by a checkbox.
+   The off track keeps a hairline. --surface-soft sits within a few RGB points of the
+   composer background in the light theme, so without one the track vanishes and the
+   knob reads as a stray dot. */
 .form-switch .form-check-input,
 .form-check-input[role="switch"] {
   position: relative;
   width: 34px;
   height: 20px;
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
-  border-color: transparent;
   background: var(--surface-soft);
   appearance: none;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 .form-switch .form-check-input::after,
 .form-check-input[role="switch"]::after {
@@ -108,7 +111,7 @@ textarea.form-control:focus { border-color: color-mix(in srgb, var(--accent) 55%
   transition: transform 0.15s ease, background 0.15s ease;
 }
 .form-switch .form-check-input:checked,
-.form-check-input[role="switch"]:checked { background: var(--accent); }
+.form-check-input[role="switch"]:checked { border-color: transparent; background: var(--accent); }
 .form-switch .form-check-input:checked::after,
 .form-check-input[role="switch"]:checked::after { transform: translateX(14px); background: #fff; }
 
