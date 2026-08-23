@@ -21,6 +21,7 @@
 import { $, el, escapeHtml } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
 import { createTranscript } from "./core/transcript.js";
+import { createSession } from "./core/session.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -186,19 +187,22 @@ const transcriptView = {
   usageText: (u) => `in:${u.inputTokens} out:${u.outputTokens} think:${u.thinkingTokens} · ${u.costUsd ? `$${Number(u.costUsd).toFixed(4)}` : "$0"}`,
 };
 
-const {
-  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
-  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
-  setUsageStamp, showRetryButton,
-} = createTranscript({
+const transcript = createTranscript({
   mount: els.transcript,
   state,
   view: transcriptView,
   // 120px leaves room for a chunk or two of buffered repaint while still letting a
   // deliberate scroll upwards break the stick.
   stickThreshold: 120,
-  onRetry: (turn) => runTurn(turn.prompt, turn.images),
+  // Resolved at click time, so the session below can be declared after this.
+  onRetry: (turn) => session.runTurn(turn.prompt, turn.images),
 });
+
+const {
+  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
+  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
+  setUsageStamp, showRetryButton,
+} = transcript;
 
 function formatToolArgs(args) {
   if (typeof args === "string") return args.slice(0, 80);
@@ -1275,18 +1279,6 @@ async function discardWrite(absPath) {
 // 6. composer
 // ───────────────────────────────────────────────────────────
 
-function addImage(file) {
-  if (!file.type.startsWith("image/")) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = reader.result;
-    const i = dataUrl.indexOf(",");
-    const base64 = i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
-    state.pendingImages.push({ mediaType: file.type, base64, dataUrl });
-    renderImageStrip();
-  };
-  reader.readAsDataURL(file);
-}
 
 function renderImageStrip() {
   const s = els.imageStrip;
@@ -1322,68 +1314,57 @@ function renderQueue() {
   });
 }
 
-function enqueue(prompt, images) {
-  state.queue.push({ id: Math.random().toString(36).slice(2), prompt, images });
-  renderQueue();
-}
 
-async function dequeueAndRun() {
-  if (state.streaming) return;
-  const next = state.queue.shift();
-  if (!next) return;
-  renderQueue();
-  await runTurn(next.prompt, next.images);
-  if (state.queue.length) dequeueAndRun();
-}
 
 function flashStatus(text, cls) {
   els.statusPill.textContent = text;
   els.statusPill.className = `badge bg-secondary ${cls || ""}`;
 }
 
-async function runTurn(prompt, images) {
-  state.streaming = true;
-  state.lastTurn = { prompt, images };   // remembered so the on-error "retry" button can resend it
-  state.abortCtrl = new AbortController();
-  els.btnSend.classList.add("d-none");
-  els.btnCancel.classList.remove("d-none");
-  flashStatus("streaming", "streaming");
+// Everything the shared turn engine needs to know about this shell: which controls mean
+// "busy", how a status reads, and what a request body looks like here.
+const session = createSession({
+  api,
+  streamPost,
+  state,
+  transcript,
+  host: {
+    onTurnStart() {
+      els.btnSend.classList.add("d-none");
+      els.btnCancel.classList.remove("d-none");
+      flashStatus("streaming", "streaming");
+    },
+    onTurnEnd() {
+      els.btnSend.classList.remove("d-none");
+      els.btnCancel.classList.add("d-none");
+      // Only fall back to "paused" if nothing else has claimed the pill since.
+      if (els.statusPill.classList.contains("streaming")) flashStatus("paused", "paused");
+      refreshJobs();
+      if (els.panes.writes.classList.contains("active")) loadPendingWrites();
+    },
+    onTurnError: () => flashStatus("error", "error"),
+    onJobId: (id) => { els.jobIdLabel.textContent = id; },
+    onSseStatus: (data) => flashStatus(
+      data.cancelled ? "cancelled" : (data.status || "paused").toLowerCase(),
+      data.cancelled ? "error" : "paused"),
+    onPlanUpdate: () => { if (els.panes.plan.classList.contains("active")) loadPlan(); },
+    formatError: (message) => `\n[error: ${message}]`,
+    buildBody: (prompt, images) => ({
+      prompt,
+      model: els.modelInput.value.trim() || null,
+      workingDirectory: els.workingDir.value.trim() || null,
+      images: (images || []).map(({ mediaType, base64 }) => ({ mediaType, base64 })),
+      system: null,
+      endpointId: els.endpointSelect?.value || null,
+    }),
+    onQueueChange: () => renderQueue(),
+    onImagesChange: () => renderImageStrip(),
+    contextInputs: { workingDir: els.workingDir, endpoint: els.endpointSelect },
+  },
+});
 
-  appendUserMessage(prompt, images);
-  beginAssistantMessage();
+const { runTurn, handleSseEvent, enqueue, drainQueue, addImage, loadJob } = session;
 
-  const body = {
-    prompt,
-    model: els.modelInput.value.trim() || null,
-    workingDirectory: els.workingDir.value.trim() || null,
-    images: (images || []).map(({ mediaType, base64 }) => ({ mediaType, base64 })),
-    system: null,
-    endpointId: els.endpointSelect?.value || null,
-  };
-  const path = state.currentJobId
-    ? `/jobs/${encodeURIComponent(state.currentJobId)}/messages/stream`
-    : "/jobs/stream";
-
-  try {
-    await streamPost(path, body, handleSseEvent, state.abortCtrl.signal);
-  } catch (e) {
-    if (e.name !== "AbortError") {
-      console.error(e);
-      appendAnswerChunk(`\n[error: ${e.message}]`);
-      flashStatus("error", "error");
-      showRetryButton();
-    }
-  } finally {
-    state.streaming = false;
-    state.abortCtrl = null;
-    state.currentMsg = null;
-    els.btnSend.classList.remove("d-none");
-    els.btnCancel.classList.add("d-none");
-    if (els.statusPill.classList.contains("streaming")) flashStatus("paused", "paused");
-    refreshJobs();
-    if (els.panes.writes.classList.contains("active")) loadPendingWrites();
-  }
-}
 
 async function onSendClick(forceQueue) {
   const prompt = els.promptBox.value.trim();
@@ -1403,7 +1384,7 @@ async function onSendClick(forceQueue) {
   // Ctrl+Enter from idle still enqueues without starting, useful for batching up several prompts before launching.
   if (forceQueue || state.streaming) {
     enqueue(prompt, images);
-    if (!state.streaming) dequeueAndRun();
+    if (!state.streaming) drainQueue();
     return;
   }
   await runTurn(prompt, images);
@@ -1455,7 +1436,7 @@ async function tryHandleSlashCommand(raw) {
 }
 
 function onCancelClick() {
-  if (state.abortCtrl) state.abortCtrl.abort();
+  session.cancelTurn();
 }
 
 function autoGrowPrompt() {
@@ -1581,17 +1562,10 @@ async function selectJob(jobId) {
   els.jobIdLabel.textContent = jobId;
   if (els.btnRefreshJob) els.btnRefreshJob.style.display = "";
   flashStatus("idle");
+  // loadJob renders the history and restores the endpoint + cwd this job was using, so
+  // the next turn stays on the same provider and directory.
   try {
-    const view = await api(`/jobs/${encodeURIComponent(jobId)}`);
-    renderHistory(view.history || []);
-    // Restore the endpoint + cwd this job was using so the next turn stays on the same provider.
-    if (view.workingDirectory) els.workingDir.value = view.workingDirectory;
-    if (els.endpointSelect && view.endpointId !== undefined && view.endpointId !== null) {
-      // Only set when the option still exists.
-      if (Array.from(els.endpointSelect.options).some(o => o.value === view.endpointId)) {
-        els.endpointSelect.value = view.endpointId;
-      }
-    }
+    await loadJob(jobId);
   } catch (e) { console.warn("job load failed", e); clearTranscript(); }
   renderJobsList();
   if (els.panes.plan.classList.contains("active")) loadPlan();
@@ -1620,43 +1594,6 @@ function newJob() {
 // 8. SSE event dispatch
 // ───────────────────────────────────────────────────────────
 
-function handleSseEvent(name, data) {
-  switch (name) {
-    case "job":
-      state.currentJobId = data.jobId;
-      els.jobIdLabel.textContent = data.jobId;
-      break;
-    case "delta":
-      appendAnswerChunk(data.text || "");
-      break;
-    case "thinking":
-      appendThinkingChunk(data.text || "");
-      break;
-    case "tool_call":
-      appendToolCall(data.id, data.name, data.args);
-      break;
-    case "tool_result":
-      appendToolResult(data.id, data.excerpt || "", data.length || 0);
-      break;
-    case "plan_update":
-      if (els.panes.plan.classList.contains("active")) loadPlan();
-      break;
-    case "status":
-      flashStatus(data.cancelled ? "cancelled" : (data.status || "paused").toLowerCase(),
-        data.cancelled ? "error" : "paused");
-      break;
-    case "usage":
-      setUsageStamp(data);
-      break;
-    case "error":
-      appendAnswerChunk(`\n[error: ${data.message}]`);
-      flashStatus("error", "error");
-      showRetryButton();
-      break;
-    case "done":
-      break;
-  }
-}
 
 // ───────────────────────────────────────────────────────────
 // 9. boot
