@@ -22,7 +22,13 @@
   --shadow: 0 -24px 80px rgba(0, 0, 0, 0.48);
   --radius: 18px;
   --topbar-height: 60px;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Named so both shells can reference them. The sans stack was already applied here
+     directly; the mono stack was previously supplied by Halfmoon as --bs-font-monospace
+     and is now owned here. Values unchanged. */
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-sans);
 }
 
 :root[data-theme="light"] {
