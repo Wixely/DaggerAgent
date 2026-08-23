@@ -27,25 +27,74 @@ body { font-feature-settings: "ss01"; }
   height: 100vh;
 }
 
+/* Translucent over the scrolling content, as mobile's topbar is. */
 .app-header {
+  position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface-soft);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   flex-shrink: 0;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.brand-mark { color: var(--dagger-mark); font-size: 1.3rem; line-height: 1; }
-.brand-name { letter-spacing: 0.02em; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; }
+/* The dagger sits in an accent tile with a soft throw, the way mobile draws it —
+   sized down from mobile's 27px to suit the shorter 48px desktop header. */
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--accent);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 22%, transparent);
+  color: #fff;
+  font-family: Georgia, serif;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+.brand-name { letter-spacing: -0.01em; }
 .header-status { flex: 1; display: flex; align-items: center; gap: 10px; }
 .header-actions { display: flex; align-items: center; gap: 6px; }
 
-#status-pill { font-family: var(--font-mono); text-transform: lowercase; }
-#status-pill.streaming { background: var(--accent); color: #fff; }
-#status-pill.error     { background: var(--danger); color: #fff; }
-#status-pill.paused    { background: var(--success); color: #fff; }
+/* Status reads as a haloed dot plus a word, matching mobile. The dot colour is the
+   whole signal, so the pill itself stays neutral instead of flooding with colour. */
+#status-pill {
+  gap: 6px;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+#status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 13%, transparent);
+}
+#status-pill.streaming { color: var(--accent-strong); }
+#status-pill.streaming::before {
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+  animation: dagger-pulse 1.2s ease-in-out infinite;
+}
+#status-pill.error { color: var(--danger); }
+#status-pill.error::before {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 13%, transparent);
+}
+/* Paused is a hold, not a success — mobile uses the warning tone for it. */
+#status-pill.paused::before {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 13%, transparent);
+}
+
+@keyframes dagger-pulse { 50% { opacity: 0.35; transform: scale(0.72); } }
 
 .app-main {
   display: grid;
@@ -65,27 +114,33 @@ body { font-feature-settings: "ss01"; }
 }
 .pane-header { padding: 10px; border-bottom: 1px solid var(--line); }
 .pane-search { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+/* Mobile lists jobs as separated cards. The desktop rail is 240px and shows a lot
+   more of them, so these take the card's rounding and outlined-active state without
+   the full padding — the density stays, the language matches. */
 .job-list {
-  list-style: none; margin: 0; padding: 6px 0;
+  list-style: none; margin: 0; padding: 6px;
+  display: grid; gap: 4px; align-content: start;
   overflow-y: auto; flex: 1; min-height: 0;
 }
 .job-list .job-item {
-  padding: 8px 12px; cursor: pointer; border-left: 3px solid transparent;
+  padding: 8px 10px; cursor: pointer;
   display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid transparent;
+  border-radius: 11px;
   font-size: 0.85rem;
 }
-.job-list .job-item:hover { background: var(--surface-soft); }
-/* Selected job: a brand-tinted background (distinct from the neutral :hover tint above),
-   a solid brand left-bar and a bolder title, so the active job is unmistakable. */
+.job-list .job-item:hover { border-color: var(--line); background: var(--surface); }
+/* Selected job: mobile's accent-soft fill and accent border. */
 .job-list .job-item.active {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border-left-color: var(--dagger-mark);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
 }
 .job-list .job-item.active > span:first-child { font-weight: 600; }
 /* The job a context menu is currently acting on. */
 .job-list .job-item.context-target { outline: 1px dashed var(--dagger-mark); outline-offset: -3px; }
-.job-list .job-item.interrupted { border-left-color: var(--warning); }
+/* An inset bar rather than a left border — the row is a rounded card now, and a
+   1px coloured edge on it was too faint to register. */
+.job-list .job-item.interrupted { box-shadow: inset 3px 0 0 var(--warning); }
 .job-list .job-id { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); }
 .job-list .job-status { font-size: 0.7rem; text-transform: lowercase; }
 
@@ -93,12 +148,12 @@ body { font-feature-settings: "ss01"; }
 .context-menu {
   position: fixed; z-index: 1080; min-width: 168px; padding: 4px;
   background: var(--bg); border: 1px solid var(--line);
-  border-radius: 6px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28); font-size: 0.85rem;
+  border-radius: 12px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28); font-size: 0.85rem;
 }
 .context-menu .cm-item {
   display: block; width: 100%; text-align: left; padding: 6px 10px;
   border: 0; background: transparent; color: var(--text);
-  border-radius: 4px; cursor: pointer;
+  border-radius: 8px; cursor: pointer;
 }
 .context-menu .cm-item:hover { background: var(--surface-soft); }
 .context-menu .cm-item.danger { color: var(--danger); }
@@ -107,11 +162,19 @@ body { font-feature-settings: "ss01"; }
 
 /* ─────────────────────────── center pane (transcript + composer) ─────────────────────────── */
 
+/* The accent glow mobile hangs above its column, retuned for this one.
+   Mobile's `circle … transparent 36%` is sized against a <=760px column; the same
+   figures over a ~1000px pane make a blob that washes the whole transcript. An
+   ellipse pinned to the top edge keeps it a hint of warmth behind the first screen
+   of text, which is what it reads as on the phone. */
 .center-pane {
   display: grid;
   grid-template-rows: 1fr auto;
   min-height: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(ellipse 52% 34% at 50% -6%,
+      color-mix(in srgb, var(--accent) 6%, transparent), transparent 72%),
+    var(--bg);
 }
 
 .transcript {
@@ -121,25 +184,65 @@ body { font-feature-settings: "ss01"; }
 }
 
 .empty-state { max-width: 480px; margin: 80px auto; text-align: center; color: var(--muted); }
+/* Mobile's gradient-filled dagger tile. Decorative, so it is hidden from the
+   accessibility tree by aria-hidden on the element itself. */
+.empty-mark {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 22px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 17px;
+  background: linear-gradient(145deg, var(--accent-soft), transparent);
+  color: var(--accent-strong);
+  font-family: Georgia, serif;
+  font-size: 31px;
+  line-height: 1;
+}
+.empty-state h3 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.03em; color: var(--text); }
 .empty-state ul.empty-tips { list-style: none; padding: 0; margin-top: 12px; text-align: left; }
 .empty-state ul.empty-tips li { padding: 4px 0; }
 
 .msg { margin-bottom: 18px; max-width: 850px; }
+/* Raised and outlined, with mobile's asymmetric corner, so the user's turn reads as
+   a card rather than a tinted block. */
 .msg.user {
-  margin-left: auto; background: var(--surface-soft);
-  border-radius: 12px 12px 4px 12px;
+  width: fit-content;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 17px 17px 4px 17px;
+  background: var(--surface-raised);
   padding: 10px 14px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+/* Mobile marks the assistant with the dagger alone — no rule down the side. The
+   glyph is enough, and dropping the bar stops every reply looking like a callout. */
 .msg.assistant {
-  background: transparent;
-  padding: 4px 4px 4px 28px;
-  border-left: 2px solid var(--dagger-mark);
   position: relative;
+  background: transparent;
+  padding: 2px 4px 4px 24px;
 }
 .msg.assistant::before {
-  content: "†"; color: var(--dagger-mark); position: absolute; left: 6px; top: 2px;
-  font-weight: 600;
+  content: "†";
+  position: absolute;
+  left: 2px;
+  top: 1px;
+  color: var(--accent);
+  font-family: Georgia, serif;
+  font-size: 18px;
+  line-height: 1.3;
+}
+/* Caret while the first token is still in flight. */
+.msg .answer:empty::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: dagger-pulse 0.9s infinite;
 }
 .msg .answer { white-space: pre-wrap; word-wrap: break-word; }
 .msg .answer.markdown-body { white-space: normal; }   /* markdown handles its own line breaks */
@@ -164,35 +267,48 @@ body { font-feature-settings: "ss01"; }
 .markdown-body li { margin: 2px 0; }
 .markdown-body li > p { margin: 0; }
 
-.markdown-body a { color: var(--accent); text-decoration: underline; }
-.markdown-body a:hover { color: var(--accent-strong); }
+.markdown-body a {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.markdown-body a:hover { color: var(--accent); }
 
+/* An accent rule and no fill, as mobile draws it — the tinted block competed with
+   code blocks for the same visual slot. */
 .markdown-body blockquote {
-  margin: 6px 0; padding: 4px 10px;
-  border-left: 3px solid var(--line);
+  margin: 8px 0; padding: 1px 0 1px 12px;
+  border-left: 2px solid var(--accent);
   color: var(--muted);
-  background: var(--surface-soft);
 }
 
 .markdown-body code {
   font-family: var(--font-mono);
-  font-size: 0.88em;
-  padding: 1px 5px;
-  background: var(--surface-soft);
-  border-radius: 3px;
+  font-size: 0.84em;
+  padding: 0.13em 0.34em;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
   color: var(--text);
 }
+/* Code sits on its own near-black slab in both themes, so snippets read the same
+   whichever theme you are in. Mirrors mobile. */
 .markdown-body pre {
-  margin: 6px 0;
-  padding: 10px 12px;
-  background: var(--surface-soft);
-  border-radius: 6px;
+  margin: 9px 0;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #09090b;
   overflow-x: auto;
   font-size: 0.85rem;
 }
+:root[data-theme="light"] .markdown-body pre { background: #262427; color: #f5f3ef; }
 .markdown-body pre code {
   padding: 0;
+  border: 0;
   background: transparent;
+  color: inherit;
   font-size: inherit;
   white-space: pre;
 }
@@ -215,36 +331,46 @@ body { font-feature-settings: "ss01"; }
   margin: 12px 0;
 }
 
-.markdown-body img { max-width: 100%; height: auto; border-radius: 4px; }
+.markdown-body img { max-width: 100%; height: auto; border-radius: 8px; }
 
 .markdown-body strong { font-weight: 600; }
 .markdown-body em { font-style: italic; }
-.msg .thinking-block { margin: 6px 0; }
+/* Mobile hangs both of these off one quiet hairline rail with no fill, so the
+   machinery recedes behind the answer instead of boxing itself out. Desktop keeps
+   its wrapped, full-width args and results — only the framing changes. */
+.msg .thinking-block, .tool-call {
+  margin: 8px 0;
+  border-left: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.msg .thinking-block { padding: 3px 0 3px 10px; }
 .msg .thinking-block summary {
-  cursor: pointer; color: var(--muted); font-size: 0.8rem;
+  cursor: pointer; font-weight: 650; color: var(--muted);
   user-select: none;
 }
 .msg .thinking-block .thinking-body {
-  margin: 4px 0 0; padding: 8px 10px;
-  background: var(--surface-soft);
-  border-left: 2px solid var(--line);
-  font-size: 0.85rem; color: var(--muted);
-  white-space: pre-wrap; font-family: var(--font-mono);
+  max-height: 260px; overflow: auto;
+  margin: 7px 0 0; padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--faint);
+  font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.5;
+  white-space: pre-wrap;
 }
 
-.tool-call {
-  display: block; margin: 6px 0; padding: 6px 10px;
-  background: var(--surface-soft);
-  border-radius: 6px;
-  border-left: 2px solid var(--accent);
-  font-family: var(--font-mono); font-size: 0.82rem;
-}
-.tool-call .tc-name { color: var(--accent); font-weight: 600; }
+.tool-call { display: grid; gap: 2px; padding: 5px 0 5px 10px; }
+.tool-call .tc-name { color: var(--muted); font-weight: 700; font-family: var(--font-mono); }
 .tool-call .tc-args, .tool-call .tc-result {
-  display: block; color: var(--muted);
+  display: block; color: var(--faint);
+  font-family: var(--font-mono); font-size: 0.7rem; line-height: 1.45;
   white-space: pre-wrap; word-wrap: break-word;
 }
-.tool-call .tc-result { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+/* No rule above the result: desktop's tool calls run the full reading width, so a
+   border there drew an 800px line that read as a divider between messages. Spacing
+   separates them, as it does on mobile. */
+.tool-call .tc-result { margin-top: 5px; }
 
 .msg-footer {
   margin-top: 6px; font-size: 0.75rem; color: var(--muted);
@@ -260,16 +386,40 @@ body { font-feature-settings: "ss01"; }
 
 /* ─────────────────────────── composer ─────────────────────────── */
 
+/* Translucent over the transcript, as mobile's composer-wrap is. */
 .composer {
+  position: relative;
+  z-index: 8;
   border-top: 1px solid var(--line);
-  padding: 10px 16px 12px;
-  background: var(--composer-bg);
+  /* Bottom padding clears the input pill's shadow and rounded edge. */
+  padding: 10px 16px 16px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   display: flex; flex-direction: column; gap: 8px;
 }
 .composer.drag-over { background: var(--accent-soft); outline: 2px dashed var(--accent); }
 
+/* Desktop keeps its cwd / endpoint / toggle rows above the input, so the floating
+   pill treatment goes on the input row itself rather than the whole composer. */
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 19px;
+  background: var(--surface-raised);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.composer-input-row:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .queue-strip {
-  border: 1px dashed var(--line); border-radius: 6px;
+  border: 1px dashed var(--line); border-radius: 11px;
   padding: 6px 8px; font-size: 0.82rem;
 }
 .queue-strip.is-empty { display: none; }
@@ -284,7 +434,7 @@ body { font-feature-settings: "ss01"; }
 .image-strip.is-empty { display: none; }
 .image-strip .img-thumb {
   position: relative; width: 60px; height: 60px;
-  border: 1px solid var(--line); border-radius: 4px;
+  border: 1px solid var(--line); border-radius: 11px;
   background: var(--surface-soft); overflow: hidden;
 }
 .image-strip .img-thumb img { width: 100%; height: 100%; object-fit: cover; }
@@ -308,11 +458,20 @@ body { font-feature-settings: "ss01"; }
    JS-built forms so the composer doesn't get it twice. */
 .composer-toggle .form-check-label { margin-left: 0; user-select: none; }
 
-.composer-input-row { display: flex; gap: 8px; align-items: flex-end; }
+/* The pill above draws the frame, so the textarea itself goes bare — otherwise you
+   see a box inside a box. Same arrangement as mobile's .composer textarea. */
 .prompt-box {
+  flex: 1;
+  min-width: 0;
   resize: none; min-height: 64px; max-height: 240px;
+  padding: 7px 8px 6px;
+  border: 0;
+  outline: 0;
+  background: transparent;
   font-family: var(--font-mono); font-size: 0.9rem;
 }
+.prompt-box:focus { border: 0; outline: 0; box-shadow: none; }
+.prompt-box::placeholder { color: var(--faint); }
 .composer-buttons { display: flex; flex-direction: column; gap: 6px; min-width: 80px; }
 
 /* ─────────────────────────── right pane (tabs) ─────────────────────────── */
@@ -359,7 +518,7 @@ body { font-feature-settings: "ss01"; }
 .endpoints-list .endpoint-head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .endpoints-list .endpoint-name { font-weight: 600; flex: 1; }
 .endpoints-list .endpoint-provider {
-  font-size: 0.7rem; padding: 1px 6px; border-radius: 3px;
+  font-size: 0.7rem; padding: 1px 6px; border-radius: 999px;
   background: var(--surface-soft); color: var(--muted);
   text-transform: lowercase;
 }
@@ -393,7 +552,7 @@ body { font-feature-settings: "ss01"; }
 }
 
 .mcp-list .mcp-card {
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 11px;
   padding: 8px 10px; margin-bottom: 8px;
   font-size: 0.82rem;
 }
@@ -411,7 +570,7 @@ body { font-feature-settings: "ss01"; }
 .mcp-list .mcp-tools li small { display: block; color: var(--muted); font-family: var(--font-sans); margin-left: 4px; }
 
 .status-badge {
-  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  display: inline-block; padding: 1px 6px; border-radius: 999px;
   font-size: 0.7rem; text-transform: lowercase;
   background: var(--surface); color: var(--muted);
 }
@@ -442,10 +601,30 @@ body { font-feature-settings: "ss01"; }
 .commands-list .cmd-desc { font-size: 0.75rem; color: var(--muted); }
 .commands-list .cmd-usage { font-size: 0.72rem; color: var(--muted); font-family: var(--font-mono); }
 
-.settings-form { display: flex; flex-direction: column; gap: 10px; }
-.settings-form .form-check { padding-left: 2.6em; }
+/* Mobile groups run-options into a bordered card on --surface; this is the desktop
+   equivalent for the settings tab, which was a flat run of controls. */
+.settings-form {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--surface);
+}
+/* No left indent: that 2.6em was Bootstrap clearing an absolutely-positioned check
+   input, and it left the switches hanging off the labels above them. */
+.settings-form .form-check { padding-left: 0; }
 .settings-form .form-check-label small { display: block; color: var(--muted); font-size: 0.72rem; }
 .settings-form label.form-label { font-size: 0.76rem; margin-bottom: 2px; color: var(--muted); }
+/* Mobile's field captions: small, spaced, uppercase. */
+.settings-form > div > label:not(.form-check-label) {
+  display: block;
+  margin: 4px 2px 3px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 
 .plan-display.empty, .writes-list.empty { padding: 6px 0; }
 .plan-step {
@@ -463,7 +642,7 @@ body { font-feature-settings: "ss01"; }
 .plan-step .step-note { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 2px; }
 
 .writes-list .write-card {
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 11px;
   margin-bottom: 8px; overflow: hidden;
 }
 .writes-list .write-head {
@@ -491,7 +670,7 @@ body { font-feature-settings: "ss01"; }
    so the modal is invisible until showModal() is called. */
 .folder-dialog[open] {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--bg);
   color: var(--text);
   padding: 16px 18px;
@@ -505,7 +684,7 @@ body { font-feature-settings: "ss01"; }
 .folder-dialog-head p { margin: 0 0 10px; }
 .folder-dialog-path {
   padding: 6px 8px; background: var(--surface-soft);
-  border-radius: 4px;
+  border-radius: 8px;
   font-family: var(--font-mono); font-size: 0.82rem;
   word-break: break-all;
   margin-bottom: 8px;
@@ -513,7 +692,7 @@ body { font-feature-settings: "ss01"; }
 .folder-entries {
   flex: 1; min-height: 200px;
   overflow-y: auto;
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 12px;
   list-style: none; padding: 4px 0; margin: 0;
 }
 .folder-entries li {
@@ -531,7 +710,7 @@ body { font-feature-settings: "ss01"; }
 
 .api-key-dialog {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--bg);
   color: var(--text);
   padding: 18px 20px;

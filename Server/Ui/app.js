@@ -243,6 +243,8 @@ function escapeHtml(s) {
 
 function clearTranscript() {
   els.transcript.replaceChildren(el("div", { class: "empty-state" },
+    // Matches the markup in index.html, so a cleared transcript looks like a fresh load.
+    el("div", { class: "empty-mark", "aria-hidden": "true" }, "†"),
     el("h3", { class: "mb-2" }, "Ready when you are."),
     el("p", { class: "text-muted" }, "Submit a prompt below to start a new job.")
   ));
