@@ -301,6 +301,10 @@ body { font-feature-settings: "ss01"; }
   border-radius: 12px;
   background: #09090b;
   overflow-x: auto;
+  /* Dark in both themes, so the scrollbar cannot follow the page palette: the light
+     theme's near-black thumb would be invisible on this slab. */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
   font-size: 0.85rem;
 }
 :root[data-theme="light"] .markdown-body pre { background: #262427; color: #f5f3ef; }

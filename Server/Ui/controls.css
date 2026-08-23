@@ -98,12 +98,17 @@ textarea.form-control:focus { border-color: color-mix(in srgb, var(--accent) 55%
   appearance: none;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
+/* The knob is positioned against the track's PADDING box, not its border box, so the
+   1px border has to come out of the inset. mobile's .switch-row i has no border and
+   uses a flat 3px; here 3px would leave 3px of track above the knob and 1px below.
+   18px of inner height minus a 14px knob centres at 2px; same on the 32px inner
+   width, which is also what keeps translateX(14px) landing 2px off the right edge. */
 .form-switch .form-check-input::after,
 .form-check-input[role="switch"]::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
+  top: 2px;
+  left: 2px;
   width: 14px;
   height: 14px;
   border-radius: 50%;
