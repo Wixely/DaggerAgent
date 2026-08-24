@@ -56,8 +56,13 @@ public sealed class ShellToolset
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(_options.ShellTimeoutSeconds));
 
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token);
+            // Pump into buffers rather than ReadToEndAsync: on timeout the latter throws and
+            // discards everything it had read, so a command that ran the full timeout returned
+            // nothing at all. Buffering keeps the partial output available to the timeout path.
+            var stdoutBuf = new StringBuilder();
+            var stderrBuf = new StringBuilder();
+            var stdoutTask = PumpAsync(proc.StandardOutput, stdoutBuf, cts.Token);
+            var stderrTask = PumpAsync(proc.StandardError, stderrBuf, cts.Token);
 
             try
             {
@@ -67,22 +72,49 @@ public sealed class ShellToolset
             {
                 try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
                 // Drain the reader tasks so they don't surface as unobserved exceptions once
-                // Kill closes the pipes.
+                // Kill closes the pipes, and so the buffers are settled before we read them.
                 try { await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false); } catch { }
-                return $"Error: command timed out after {_options.ShellTimeoutSeconds}s.";
+
+                var timedOut = new StringBuilder();
+                timedOut.Append("Error: command timed out after ").Append(_options.ShellTimeoutSeconds)
+                        .AppendLine("s and was killed; partial output follows.");
+                timedOut.Append("interpreter: ").AppendLine(file);
+                AppendStreams(timedOut, stdoutBuf, stderrBuf);
+                return timedOut.ToString();
             }
 
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
 
             var sb = new StringBuilder();
             sb.Append("interpreter: ").AppendLine(file);
             sb.Append("exit_code: ").AppendLine(proc.ExitCode.ToString());
-            if (!string.IsNullOrEmpty(stdout)) sb.AppendLine("---stdout---").Append(stdout);
-            if (!string.IsNullOrEmpty(stderr)) sb.AppendLine("---stderr---").Append(stderr);
+            AppendStreams(sb, stdoutBuf, stderrBuf);
             return sb.ToString();
         }
         catch (Exception ex) { return $"Error: {ex.Message}"; }
+    }
+
+    // Reads incrementally so whatever arrived before cancellation survives in `sink`.
+    // Cancellation and a pipe closed by Kill are both normal ends of stream here, not errors.
+    private static async Task PumpAsync(StreamReader reader, StringBuilder sink, CancellationToken ct)
+    {
+        var buffer = new char[4096];
+        while (true)
+        {
+            int read;
+            try { read = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+            catch (IOException) { break; }
+            catch (ObjectDisposedException) { break; }
+            if (read == 0) break;
+            sink.Append(buffer, 0, read);
+        }
+    }
+
+    private static void AppendStreams(StringBuilder sb, StringBuilder stdout, StringBuilder stderr)
+    {
+        if (stdout.Length > 0) sb.AppendLine("---stdout---").Append(stdout);
+        if (stderr.Length > 0) sb.AppendLine("---stderr---").Append(stderr);
     }
 
     private static (string? File, string Args) ResolveShell(string shell, string command)
