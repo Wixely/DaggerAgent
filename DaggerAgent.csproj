@@ -23,9 +23,16 @@
     <EmbeddedResource Include="icon.ico" LogicalName="Dagger.icon.ico" />
     <None Remove="icon.ico" />
     <!-- Web UI assets. The LogicalName transform flattens subdirectories into dot-separated
-         resource names — Server\Ui\app.js becomes Dagger.ui.app.js, served by EmbeddedAssets.TryGetUiAsset. -->
+         resource names: Server\Ui\core\api.js becomes Dagger.ui.core.api.js, which is what
+         EmbeddedAssets.TryGetUiAsset looks up.
+
+         Both separators have to be replaced. MSBuild fills %(RecursiveDir) with the host
+         platform's separator, so it is "core\" on Windows and "core/" on Linux. Replacing
+         only the backslash left "Dagger.ui.core/api.js" on the CI runners, which no lookup
+         can match - every core module 404s and the UI dies on its first import. Nothing
+         caught it earlier because Server\Ui had no subdirectories until core\ existed. -->
     <EmbeddedResource Include="Server\Ui\**\*"
-                      LogicalName="Dagger.ui.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.'))%(Filename)%(Extension)" />
+                      LogicalName="Dagger.ui.$([System.String]::Copy('%(RecursiveDir)').Replace('\','.').Replace('/','.'))%(Filename)%(Extension)" />
     <None Remove="Server\Ui\**\*" />
     <Content Remove="Server\Ui\**\*" />
   </ItemGroup>
