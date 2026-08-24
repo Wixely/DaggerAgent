@@ -84,13 +84,18 @@
 
         <div id="image-strip" class="image-strip is-empty"></div>
 
-        <div class="composer-row composer-meta">
+        <!-- Collapses cwd / endpoint / model / toggles into one line under 780px, where
+             those four rows otherwise eat 38% of the screen. Hidden on desktop. -->
+        <button id="composer-context" class="composer-context" type="button"
+                aria-expanded="false" aria-controls="composer-meta-cwd composer-meta-endpoint composer-toggles"></button>
+
+        <div id="composer-meta-cwd" class="composer-row composer-meta">
           <label class="composer-label" for="working-dir">cwd</label>
           <input id="working-dir" class="form-control form-control-sm composer-cwd" placeholder="working directory (defaults to launch cwd)" list="working-dirs">
           <datalist id="working-dirs"></datalist>
           <button id="btn-browse-cwd" class="btn btn-sm btn-outline-secondary" title="Browse the server's filesystem" aria-label="Browse for a working directory" type="button">📁</button>
         </div>
-        <div class="composer-row composer-meta">
+        <div id="composer-meta-endpoint" class="composer-row composer-meta">
           <label class="composer-label" for="endpoint-select">endpoint</label>
           <select id="endpoint-select" class="form-select form-select-sm composer-endpoint" title="Which LLM endpoint to send this turn to. Falls back to the active default.">
             <option value="">(use active default)</option>
@@ -99,7 +104,7 @@
           <input id="model-input" class="form-control form-control-sm composer-model" placeholder="(endpoint default)">
         </div>
 
-        <div class="composer-toggles">
+        <div id="composer-toggles" class="composer-toggles">
           <label class="form-check form-switch composer-toggle" title="Force the agent to make a plan before tool calls">
             <input id="t-plan" type="checkbox" class="form-check-input">
             <span class="form-check-label">Plan</span>
