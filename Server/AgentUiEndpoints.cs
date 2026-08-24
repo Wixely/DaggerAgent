@@ -28,27 +28,22 @@ public static class AgentUiEndpoints
 
         // ──────────────────────────── static assets ────────────────────────────
 
-        // Desktop and mobile shells share the embedded asset path. The HTML uses absolute
-        // hrefs ("__BASE__/app.css") that are rewritten at serve time, so a configurable
+        // One shell for every viewport now. The HTML uses absolute hrefs
+        // ("__BASE__/app.css") that are rewritten at serve time, so a configurable
         // basePath still works.
+        //
+        // No user-agent sniffing and so no Vary on it either, which means /agent/ui is
+        // a plain cacheable response again rather than one that varies per device.
         var uiPrefix = $"{basePath}/ui";
-        var mobilePath = $"{basePath}/mobile";
-        group.MapGet("/ui", (HttpContext context) =>
-        {
-            context.Response.Headers["Vary"] = "User-Agent, Sec-CH-UA-Mobile";
-            return ShouldUseMobileUi(context.Request)
-                ? Results.Redirect(mobilePath)
-                : ServeIndexHtml("index.html", uiPrefix);
-        });
-        group.MapGet("/ui/{**path}", (HttpContext context, string? path) =>
-        {
-            if (!string.IsNullOrEmpty(path)) return ServeAsset(path);
-            context.Response.Headers["Vary"] = "User-Agent, Sec-CH-UA-Mobile";
-            return ShouldUseMobileUi(context.Request)
-                ? Results.Redirect(mobilePath)
-                : ServeIndexHtml("index.html", uiPrefix);
-        });
-        group.MapGet("/mobile", () => ServeIndexHtml("mobile.html", uiPrefix));
+        group.MapGet("/ui", () => ServeIndexHtml("index.html", uiPrefix));
+        group.MapGet("/ui/{**path}", (string? path) =>
+            string.IsNullOrEmpty(path) ? ServeIndexHtml("index.html", uiPrefix) : ServeAsset(path));
+
+        // The separate mobile shell is gone, but this path outlived it: phones were
+        // redirected here for months, so it is in bookmarks and home-screen shortcuts.
+        // Kept as a redirect rather than removed. 302 and not 301 deliberately - a
+        // permanent redirect would be cached by the browser and hard to take back.
+        group.MapGet("/mobile", () => Results.Redirect(uiPrefix));
 
         // ──────────────────────────── endpoints (LLM) ────────────────────────────
 
@@ -681,29 +676,6 @@ public static class AgentUiEndpoints
             return Results.NotFound();
         var html = System.Text.Encoding.UTF8.GetString(bytes).Replace("__BASE__", uiPrefix);
         return Results.Content(html, "text/html; charset=utf-8");
-    }
-
-    private static bool ShouldUseMobileUi(HttpRequest request)
-    {
-        // Keep an explicit escape hatch so a phone can still reach the full configuration UI.
-        if (request.Query.TryGetValue("desktop", out var desktop) &&
-            (desktop.ToString() == "1" || desktop.ToString().Equals("true", StringComparison.OrdinalIgnoreCase)))
-            return false;
-
-        if (request.Headers.TryGetValue("Sec-CH-UA-Mobile", out var mobileHint) &&
-            mobileHint.ToString() == "?1")
-            return true;
-
-        var userAgent = request.Headers["User-Agent"].ToString();
-        if (string.IsNullOrWhiteSpace(userAgent)) return false;
-
-        return userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("iPod", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("IEMobile", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("Mobile", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("Opera Mini", StringComparison.OrdinalIgnoreCase);
     }
 }
 

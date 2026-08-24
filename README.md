@@ -39,9 +39,11 @@ dotnet run -- serve
 curl http://localhost:5090/agent/healthz
 ```
 
-Open `http://localhost:5090/agent/ui` for the web interface. Mobile browsers are sent to
-the streamlined `/agent/mobile` view automatically; add `?desktop=1` to keep the full UI
-on a phone or tablet.
+Open `http://localhost:5090/agent/ui` for the web interface. It is one responsive page:
+on a phone the side panes become bottom sheets, the configuration tabs fold behind
+*Advanced*, and the composer collapses to a single context line. `/agent/mobile` was a
+separate shell until it was merged in; the path still redirects to `/agent/ui` so older
+bookmarks keep working.
 
 ## Configuration
 

@@ -44,7 +44,7 @@ components, each under its own license:
 The license files for these components are included in the `Server/Ui/`
 directory as `marked.LICENSE` and `purify.LICENSE`.
 
-The stylesheets (`tokens.css`, `primitives.css`, `app.css`, `mobile.css`) are
+The stylesheets (`tokens.css`, `primitives.css`, `controls.css`, `app.css`) are
 first-party. Earlier versions vendored Halfmoon CSS (MIT); it was removed once
 the UI stopped depending on it.
 
