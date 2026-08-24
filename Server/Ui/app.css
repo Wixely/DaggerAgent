@@ -777,7 +777,6 @@ body { font-feature-settings: "ss01"; }
      status bar and the send button under the home indicator on an iPhone. env()
      resolves to 0px wherever there is no inset, so this is safe on any device. */
   .app-shell { grid-template-rows: calc(var(--header-height) + env(safe-area-inset-top)) 1fr; }
-  .left-pane, .right-pane { padding-bottom: env(safe-area-inset-bottom); }
   /* Keep a bounced transcript from dragging the whole page with it. */
   .transcript { overscroll-behavior-y: contain; }
 
@@ -799,28 +798,59 @@ body { font-feature-settings: "ss01"; }
   .app-main { grid-template-columns: 1fr; }
   .app-main.collapsed-right { grid-template-columns: 1fr; }
 
+  /* Bottom sheets rather than side drawers. Same mechanism - still the .open class and
+     the shared backdrop, so app.js is unchanged - only the presentation moves. A sheet
+     rising from the bottom is reachable one-handed on a tall phone in a way the top of
+     a full-height side drawer is not, and it matches the language mobile already uses. */
   .left-pane, .right-pane {
     position: fixed;
-    top: var(--header-height);
-    bottom: 0;
-    z-index: 60;
-    transition: transform 0.18s ease;
-    box-shadow: 0 0 24px rgba(0,0,0,0.35);
-  }
-  .left-pane {
-    left: 0;
-    width: var(--left-pane-width);
-    max-width: 320px;
-    transform: translateX(-100%);
-  }
-  .right-pane {
+    top: auto;
     right: 0;
-    width: var(--right-pane-width);
-    max-width: 360px;
-    transform: translateX(100%);
-    display: flex;                 /* override the desktop-default in-grid display */
+    bottom: 0;
+    left: 0;
+    z-index: 60;
+    width: auto;
+    max-width: none;
+    /* Leaves the transcript visible above, which is what tells you the sheet is a layer
+       over the conversation rather than a page you navigated to. */
+    max-height: min(82dvh, 760px);
+    /* Both panes are already flex columns whose list child scrolls, so capping the
+       height here is all that is needed to make the sheet body scrollable. */
+    display: flex;                 /* also overrides .collapsed-right hiding the pane */
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 20px 20px 0 0;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow);
+    transform: translateY(100%);
+    transition: transform 0.2s ease;
+    overflow: hidden;              /* keeps the list from squaring off the rounded top */
   }
-  .left-pane.open, .right-pane.open { transform: translateX(0); }
+  .left-pane.open, .right-pane.open { transform: translateY(0); }
+
+  /* Grab handle. Decorative, and a flex item so it does not overlap the pane header. */
+  .left-pane::before, .right-pane::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 36px;
+    height: 4px;
+    margin: 8px auto 2px;
+    border-radius: 999px;
+    background: var(--line-strong);
+  }
+
+  /* The pane draws its own top edge now. */
+  .left-pane { border-right: 0; }
+  .right-pane { border-left: 0; }
+
+  /* Home-indicator clearance goes on the scrolling child, not the sheet: padding on
+     the sheet itself would just shrink the scroll area and strand the last row. */
+  .left-pane .job-list,
+  .right-pane .right-tab-content { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+  /* A sheet is modal, so the backdrop covers the header too - tapping anywhere off the
+     sheet closes it, rather than leaving a live strip along the top. */
+  .drawer-backdrop { inset: 0; }
 
   /* Composer breathes on narrow viewports: stack cwd / model on their own rows so
      the textarea isn't squeezed below ~150px wide. Hide the small uppercase labels. */

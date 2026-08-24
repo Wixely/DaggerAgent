@@ -1698,6 +1698,13 @@ function wireEvents() {
     syncRightExpanded();
   });
   els.drawerBackdrop.addEventListener("click", closeDrawers);
+  // A sheet is modal, so Escape should dismiss it - that is what mobile gets free from
+  // <dialog>. Only acts when one is actually open, so it does not swallow the key.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    if (!els.leftPane.classList.contains("open") && !els.rightPane.classList.contains("open")) return;
+    closeDrawers();
+  });
   // Collapse drawers automatically when the user picks something from inside them on mobile.
   els.jobsList.addEventListener("click", () => { if (isMobile()) closeDrawers(); });
   els.btnNewJob.addEventListener("click", () => { if (isMobile()) closeDrawers(); });
