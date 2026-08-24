@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Daggeragent.Configuration;
 using Daggeragent.Mcp;
 using Daggeragent.Persistence;
@@ -741,13 +742,34 @@ internal sealed record McpServerPatch(
 
 internal static class JsonOpts
 {
-    public static readonly JsonSerializerOptions Default = new()
+    /// <summary>
+    /// Shared serializer options for the UI endpoints. Frozen at construction, and that
+    /// matters: seventeen endpoints hand this same instance to <c>Results.Json</c>, whose
+    /// <c>JsonHttpResult</c> constructor mutates any options it is given that are not yet
+    /// read-only — it assigns a <c>TypeInfoResolver</c> and then calls
+    /// <c>MakeReadOnly()</c>. On a cold server two concurrent requests can both pass that
+    /// read-only check; whichever freezes the instance first leaves the other assigning a
+    /// resolver to a frozen instance, which throws and turns that request into a 500.
+    /// Supplying the resolver here and freezing up front means the check is already true
+    /// on the very first request, so the mutation never runs.
+    /// </summary>
+    public static readonly JsonSerializerOptions Default = CreateFrozen();
+
+    private static JsonSerializerOptions CreateFrozen()
     {
-        // camelCase matches the rest of the API surface (ASP.NET's default Results.Json output)
-        // and lets the JS UI use natural property names like `cmd.command`, `s.workingDirectory`.
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false,
-    };
+        var options = new JsonSerializerOptions
+        {
+            // camelCase matches the rest of the API surface (ASP.NET's default Results.Json output)
+            // and lets the JS UI use natural property names like `cmd.command`, `s.workingDirectory`.
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = false,
+            // The same resolver JsonHttpResult would have installed, just installed before
+            // anything can race to do it.
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+        };
+        options.MakeReadOnly();
+        return options;
+    }
 }
