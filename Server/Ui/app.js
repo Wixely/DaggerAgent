@@ -18,23 +18,21 @@
 // 1. base path + API client
 // ───────────────────────────────────────────────────────────
 
-const UI_PATH_RE = /\/ui(?:\/.*)?$/;
-const BASE_PATH = window.location.pathname.replace(UI_PATH_RE, "") || "/agent";
+import { $, el, escapeHtml } from "./core/dom.js";
+import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
+import { createTranscript } from "./core/transcript.js";
+import { createSession } from "./core/session.js";
+import { createToast } from "./core/toast.js";
+
+const BASE_PATH = resolveBasePath();
 
 const apiKeyDialog = document.getElementById("api-key-dialog");
 const apiKeyInput = document.getElementById("api-key-input");
 
-function getApiKey() { return localStorage.getItem("daggerApiKey") || ""; }
-function setApiKey(v) { localStorage.setItem("daggerApiKey", v || ""); }
-
-function authHeaders(extra) {
-  const h = Object.assign({}, extra || {});
-  const k = getApiKey();
-  if (k) h["X-Api-Key"] = k;
-  return h;
-}
-
-async function promptForKey(reason) {
+// Handed to createApi as its 401 handler. Owning the dialog is the shell's job; the
+// client only needs to know whether a fresh key was entered. createApi single-flights
+// the call, so concurrent 401s share one dialog rather than double-calling showModal().
+function promptForKey(reason) {
   return new Promise((resolve) => {
     apiKeyInput.value = getApiKey();
     apiKeyDialog.querySelector("p").textContent = reason || "Server rejected the request. Enter the configured API key.";
@@ -51,65 +49,9 @@ async function promptForKey(reason) {
   });
 }
 
-async function api(path, opts = {}) {
-  const url = path.startsWith("/") ? `${BASE_PATH}${path}` : `${BASE_PATH}/${path}`;
-  const init = Object.assign({}, opts, { headers: authHeaders(opts.headers) });
-  const r = await fetch(url, init);
-  if (r.status === 401) {
-    const ok = await promptForKey("Server rejected the API key. Try again.");
-    if (!ok) throw new Error("Unauthorized");
-    return api(path, opts);
-  }
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    throw new Error(`HTTP ${r.status} on ${url}: ${body.slice(0, 200)}`);
-  }
-  const ct = r.headers.get("content-type") || "";
-  return ct.includes("application/json") ? r.json() : r.text();
-}
+const { api, streamPost } = createApi({ basePath: BASE_PATH, onUnauthorized: promptForKey });
 
-function streamPost(path, body, handlers, signal) {
-  const url = path.startsWith("/") ? `${BASE_PATH}${path}` : `${BASE_PATH}/${path}`;
-  return (async () => {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
-      body: JSON.stringify(body),
-      signal,
-    });
-    if (r.status === 401) {
-      const ok = await promptForKey("Server rejected the API key. Try again.");
-      if (!ok) throw new Error("Unauthorized");
-      return streamPost(path, body, handlers, signal);
-    }
-    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status} on ${url}`);
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, nl);
-        buf = buf.slice(nl + 2);
-        let name = "message", data = "";
-        for (const line of block.split("\n")) {
-          if (line.startsWith("event:")) name = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
-        }
-        let payload = {};
-        if (data) {
-          try { payload = JSON.parse(data); }
-          catch { payload = { raw: data }; }
-        }
-        try { handlers(name, payload); }
-        catch (err) { console.error("SSE handler failed", name, err); }
-      }
-    }
-  })();
-}
+const showToast = createToast(document.getElementById("toast"), document.querySelector(".composer"));
 
 // ───────────────────────────────────────────────────────────
 // 2. global state
@@ -138,7 +80,6 @@ const state = {
 // 3. DOM shortcuts
 // ───────────────────────────────────────────────────────────
 
-const $ = (id) => document.getElementById(id);
 const els = {
   statusPill: $("status-pill"),
   jobIdLabel: $("job-id-label"),
@@ -167,6 +108,11 @@ const els = {
   btnSend: $("btn-send"),
   btnCancel: $("btn-cancel"),
   tabs: document.querySelectorAll(".right-tabs .nav-link"),
+  rightTabs: $("right-tabs"),
+  btnAdvancedTabs: $("btn-advanced-tabs"),
+  toast: $("toast"),
+  composer: $("composer"),
+  composerContext: $("composer-context"),
   panes: {
     endpoints: $("tab-endpoints"),
     mcp: $("tab-mcp"),
@@ -203,248 +149,68 @@ const els = {
   folderSelect: $("folder-select"),
 };
 
-function el(tag, props, ...children) {
-  const node = document.createElement(tag);
-  if (props) {
-    for (const [k, v] of Object.entries(props)) {
-      if (k === "class") node.className = v;
-      else if (k === "html") node.innerHTML = v;
-      else if (k === "text") node.textContent = v;
-      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2).toLowerCase(), v);
-      else if (k === "dataset") Object.assign(node.dataset, v);
-      else if (v === true) node.setAttribute(k, "");
-      else if (v !== false && v !== null && v !== undefined) node.setAttribute(k, v);
-    }
-  }
-  for (const c of children.flat()) {
-    if (c == null || c === false) continue;
-    node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-  }
-  return node;
-}
 
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("'", "&#39;");
-}
+// Unique ids for generated form controls, so each <label> can carry a matching `for`.
+// Without it the right-pane forms hand a screen reader a pile of unnamed inputs.
+let _fieldSeq = 0;
+function fieldId(prefix) { return (prefix || "f") + "-" + (++_fieldSeq); }
+
 
 // ───────────────────────────────────────────────────────────
 // 4. transcript rendering
 // ───────────────────────────────────────────────────────────
 
-function clearTranscript() {
-  els.transcript.replaceChildren(el("div", { class: "empty-state" },
+// How the desktop shell wants the shared transcript to read. The machinery lives in
+// core/transcript.js; everything here is the wording, classes and node shapes that
+// differ from mobile.
+const transcriptView = {
+  emptyState: () => el("div", { class: "empty-state" },
+    // Matches the markup in index.html, so a cleared transcript looks like a fresh load.
+    el("div", { class: "empty-mark", "aria-hidden": "true" }, "†"),
     el("h3", { class: "mb-2" }, "Ready when you are."),
-    el("p", { class: "text-muted" }, "Submit a prompt below to start a new job.")
-  ));
-}
-
-function renderHistory(history) {
-  els.transcript.replaceChildren();
-  for (const m of history) {
-    if (m.role === "user") {
-      els.transcript.appendChild(el("div", { class: "msg user" }, m.text));
-    } else if (m.role === "assistant") {
-      const msg = el("div", { class: "msg assistant" });
-      const ans = el("div", { class: "answer markdown-body" });
-      ans.dataset.raw = m.text || "";
-      renderMarkdownInto(ans, m.text || "");
-      msg.appendChild(ans);
-      els.transcript.appendChild(msg);
-    } else if (m.role === "tool") {
-      els.transcript.appendChild(el("div", { class: "msg assistant" },
-        el("div", { class: "tool-call" },
-          el("span", { class: "tc-name" }, "← tool result"),
-          el("span", { class: "tc-result" }, (m.text || "").slice(0, 800))
-        )));
-    }
-  }
-  // History switch — always stick to bottom.
-  els.transcript.scrollTop = els.transcript.scrollHeight;
-}
-
-function appendUserMessage(text, images) {
-  if (els.transcript.querySelector(".empty-state")) els.transcript.replaceChildren();
-  const node = el("div", { class: "msg user" });
-  if (images && images.length) {
-    const strip = el("div", { class: "image-strip" });
-    for (const img of images) {
-      strip.appendChild(el("div", { class: "img-thumb" }, el("img", { src: img.dataUrl })));
-    }
-    strip.style.display = "flex"; strip.style.marginBottom = "6px";
-    node.appendChild(strip);
-  }
-  node.appendChild(document.createTextNode(text));
-  withScrollStick(() => els.transcript.appendChild(node));
-}
-
-function beginAssistantMessage() {
-  const msg = el("div", { class: "msg assistant" });
-  state.toolCallNodes = {};
-  state.lastBlock = null;
-  state.lastBlockType = null;
-  // Footer pinned as the very last child so we can keep `insertBefore(footer)` everywhere.
-  state.currentFooter = el("div", { class: "msg-footer" },
-    el("button", {
-      class: "copy-btn",
-      onclick: () => {
-        // Prefer the raw markdown buffer when we have it (preserves syntax), fall back to
-        // the rendered text content otherwise. Tool results never have a raw buffer.
-        const text = Array.from(msg.querySelectorAll(".answer, .tc-result"))
-          .map((n) => (n.dataset && n.dataset.raw) || n.textContent || "")
-          .join("\n")
-          .trim();
-        navigator.clipboard.writeText(text);
-      },
-    }, "copy"),
-    el("span", { class: "usage-stamp text-muted" }));
-  msg.appendChild(state.currentFooter);
-  withScrollStick(() => els.transcript.appendChild(msg));
-  state.currentMsg = msg;
-}
-
-// Each segment is appended right before the footer so it stays at the end.
-function pushSegment(node) {
-  if (!state.currentMsg || !state.currentFooter) return;
-  withScrollStick(() => state.currentMsg.insertBefore(node, state.currentFooter));
-  state.lastBlock = node;
-}
-
-// Add a "retry" button to the current message's footer (next to "copy") when a turn errors.
-// Captures THIS turn's prompt/images in the closure so an old error bubble always re-sends the
-// prompt that failed on it, not whatever was typed later. No-op if already added.
-function showRetryButton() {
-  const footer = state.currentFooter;
-  if (!footer || footer.querySelector(".retry-btn")) return;
-  const turn = state.lastTurn;
-  if (!turn) return;
-  const btn = el("button", {
+    el("p", { class: "text-muted" }, "Submit a prompt below to start a new job.")),
+  historyToolBlock: (text) => el("div", { class: "tool-call" },
+    el("span", { class: "tc-name" }, "← tool result"),
+    el("span", { class: "tc-result" }, text.slice(0, 800))),
+  userImage: (img) => el("div", { class: "img-thumb" }, el("img", { src: img.dataUrl })),
+  copyButton: (getText) => el("button", {
+    class: "copy-btn",
+    onclick: () => navigator.clipboard.writeText(getText()),
+  }, "copy"),
+  retryButton: (onClick) => el("button", {
     class: "retry-btn",
     title: "Resend the previous prompt",
-    onclick: () => {
-      if (state.streaming) return;   // don't stack turns on top of a running one
-      runTurn(turn.prompt, turn.images);
-    },
-  }, "retry");
-  footer.insertBefore(btn, footer.firstChild);
-}
+    onclick: onClick,
+  }, "retry"),
+  toolName: (name) => `→ ${name}`,
+  toolArgs: (args) => {
+    const s = args ? formatToolArgs(args) : "";
+    return s ? `(${s})` : "()";
+  },
+  toolPending: "…",
+  toolPendingClass: "text-muted",
+  toolResult: (excerpt, length) => `← ${excerpt} (${length} chars)`,
+  thinkingSummary: "thinking…",
+  usageStampClass: "usage-stamp text-muted",
+  usageText: (u) => `in:${u.inputTokens} out:${u.outputTokens} think:${u.thinkingTokens} · ${u.costUsd ? `$${Number(u.costUsd).toFixed(4)}` : "$0"}`,
+};
 
-// ───────────────────────────────────────────────────────────
-// markdown renderer (marked + DOMPurify, both vendored as embedded assets)
-// ───────────────────────────────────────────────────────────
+const transcript = createTranscript({
+  mount: els.transcript,
+  state,
+  view: transcriptView,
+  // 120px leaves room for a chunk or two of buffered repaint while still letting a
+  // deliberate scroll upwards break the stick.
+  stickThreshold: 120,
+  // Resolved at click time, so the session below can be declared after this.
+  onRetry: (turn) => session.runTurn(turn.prompt, turn.images),
+});
 
-const markdownReady = typeof window.marked !== "undefined" && typeof window.DOMPurify !== "undefined";
-if (markdownReady) {
-  // GitHub-flavoured: linkify URLs, hard line-breaks inside paragraphs (matches what the
-  // model usually intends when it inserts a single \n), no header IDs, no mangling.
-  window.marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-}
-
-function renderMarkdownInto(node, rawText) {
-  if (!markdownReady) {
-    // Fallback: plain-text — let CSS white-space: pre-wrap handle newlines.
-    node.textContent = rawText;
-    return;
-  }
-  const html = window.marked.parse(rawText);
-  // DOMPurify strips any <script>, javascript:, on*=, etc. that the LLM might emit.
-  node.innerHTML = window.DOMPurify.sanitize(html, { ADD_ATTR: ["target"] });
-  // Open external links in a new tab so clicking doesn't unload the agent UI mid-stream.
-  for (const a of node.querySelectorAll("a[href^='http']")) {
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-  }
-}
-
-// Re-rendering markdown for every streamed token would thrash the browser, so coalesce
-// updates to one render per animation frame per answer block.
-const _pendingRender = new WeakSet();
-function scheduleMarkdownRender(node) {
-  if (_pendingRender.has(node)) return;
-  _pendingRender.add(node);
-  requestAnimationFrame(() => {
-    _pendingRender.delete(node);
-    const raw = node.dataset.raw || "";
-    withScrollStick(() => renderMarkdownInto(node, raw));
-  });
-}
-
-function appendAnswerChunk(text) {
-  if (!state.currentMsg) return;
-  if (state.lastBlockType !== "answer") {
-    const node = el("div", { class: "answer markdown-body" });
-    node.dataset.raw = "";
-    pushSegment(node);
-    state.lastBlockType = "answer";
-  }
-  // Accumulate raw markdown on the node itself so each animation frame can re-render the
-  // full buffer (marked needs the whole document to handle code fences/lists correctly).
-  state.lastBlock.dataset.raw = (state.lastBlock.dataset.raw || "") + text;
-  scheduleMarkdownRender(state.lastBlock);
-}
-
-function appendThinkingChunk(text) {
-  if (!state.currentMsg) return;
-  if (state.lastBlockType !== "thinking") {
-    const details = el("details", { class: "thinking-block" });
-    details.appendChild(el("summary", {}, "thinking…"));
-    const body = el("pre", { class: "thinking-body" });
-    details.appendChild(body);
-    details._thinkingBody = body;     // stash for fast append below
-    pushSegment(details);
-    state.lastBlockType = "thinking";
-  }
-  withScrollStick(() => state.lastBlock._thinkingBody.appendChild(document.createTextNode(text)));
-}
-
-function appendToolCall(id, name, args) {
-  if (!state.currentMsg) return;
-  const argStr = args ? formatToolArgs(args) : "";
-  const node = el("div", { class: "tool-call" },
-    el("span", { class: "tc-name" }, `→ ${name}`),
-    el("span", { class: "tc-args" }, argStr ? `(${argStr})` : "()"),
-    el("span", { class: "tc-result text-muted" }, "…")
-  );
-  state.toolCallNodes[id || ""] = node;
-  pushSegment(node);
-  state.lastBlockType = "tool_call";
-}
-
-function appendToolResult(id, excerpt, length) {
-  const node = state.toolCallNodes[id || ""];
-  if (!node) return;
-  const r = node.querySelector(".tc-result");
-  withScrollStick(() => {
-    r.textContent = `← ${excerpt} (${length} chars)`;
-    r.classList.remove("text-muted");
-  });
-}
-
-function setUsageStamp(usage) {
-  if (!state.currentMsg) return;
-  const stamp = state.currentMsg.querySelector(".usage-stamp");
-  if (!stamp) return;
-  const cost = usage.costUsd ? `$${Number(usage.costUsd).toFixed(4)}` : "$0";
-  stamp.textContent = `in:${usage.inputTokens} out:${usage.outputTokens} think:${usage.thinkingTokens} · ${cost}`;
-}
-
-// Stick to bottom only if the user was already near the bottom BEFORE the DOM grew.
-// Measuring after the change misses sticky cases because the new content pushes the
-// threshold past the limit — a tool_result that replaces 1 char with 500 chars adds
-// hundreds of pixels in one shot, and the post-change distance is already > threshold.
-// ~120px gives room for one or two streaming chunks of buffered repaint while letting
-// the user break free by deliberately scrolling further up.
-function withScrollStick(fn) {
-  const t = els.transcript;
-  const before = t.scrollHeight - (t.scrollTop + t.clientHeight);
-  const sticky = before < 120;
-  fn();
-  if (sticky) t.scrollTop = t.scrollHeight;
-}
+const {
+  withScrollStick, clearTranscript, renderHistory, appendUserMessage, beginAssistantMessage,
+  pushSegment, appendAnswerChunk, appendThinkingChunk, appendToolCall, appendToolResult,
+  setUsageStamp, showRetryButton,
+} = transcript;
 
 function formatToolArgs(args) {
   if (typeof args === "string") return args.slice(0, 80);
@@ -459,18 +225,78 @@ function formatToolArgs(args) {
   } catch { return ""; }
 }
 
-// ───────────────────────────────────────────────────────────
-// 5. right-side tabs
-// ───────────────────────────────────────────────────────────
-
 function switchTab(name) {
-  for (const btn of els.tabs) btn.classList.toggle("active", btn.dataset.tab === name);
+  for (const btn of els.tabs) {
+    const on = btn.dataset.tab === name;
+    btn.classList.toggle("active", on);
+    // Keep the ARIA state and the roving tabindex in step with the class, or the
+    // tablist announces the wrong tab and Tab lands on all eight of them.
+    btn.setAttribute("aria-selected", String(on));
+    if (on) btn.removeAttribute("tabindex"); else btn.setAttribute("tabindex", "-1");
+  }
   for (const [k, pane] of Object.entries(els.panes)) pane.classList.toggle("active", k === name);
   if (name === "endpoints") loadEndpoints();
   if (name === "mcp") loadMcpConfig();
   if (name === "triggers") loadTriggers();
   if (name === "plan") loadPlan();
   if (name === "writes") loadPendingWrites();
+  revealAdvancedIfNeeded();
+  updateComposerContext();
+}
+
+// The five configuration tabs fold behind Advanced under 780px. Nothing here does
+// anything at desktop width: the class is inert and the toggle is display:none.
+const ADVANCED_TABS = new Set(["endpoints", "mcp", "triggers", "tools", "commands"]);
+
+function activeTabName() {
+  const btn = Array.from(els.tabs).find((b) => b.classList.contains("active"));
+  return btn ? btn.dataset.tab : null;
+}
+
+// Whatever is in view has to be reachable. If the active tab lives in the folded group,
+// open the group rather than leave the one tab you are looking at hidden.
+function revealAdvancedIfNeeded() {
+  if (!ADVANCED_TABS.has(activeTabName())) return;
+  els.rightTabs.classList.add("show-advanced");
+  els.btnAdvancedTabs.setAttribute("aria-expanded", "true");
+}
+
+// The composer summary line, shown only under 780px. It has to say enough that you can
+// send a turn without expanding it: where it will run, which endpoint, and any tool
+// switch that changes what the agent is allowed to do. Read-only and Preview writes are
+// the ones worth surfacing - not knowing they are on is how you lose a turn.
+function updateComposerContext() {
+  const sep = /[\\/]/;   // Windows and POSIX separators both
+  const dir = els.workingDir.value.trim().replace(/[\\/]+$/, "");
+  const leaf = dir.split(sep).filter(Boolean).pop() || dir || "default dir";
+  const sel = els.endpointSelect;
+  // Only name an endpoint when one was actually picked: the placeholder option reads
+  // "(use active default)", which costs a line of a 390px summary to say nothing.
+  const endpoint = sel && sel.value && sel.selectedIndex >= 0
+    ? sel.options[sel.selectedIndex].textContent.trim()
+    : "";
+  const model = els.modelInput.value.trim();
+  const flags = [
+    els.tReadonly.checked && "read-only",
+    els.tPreview.checked && "preview writes",
+    els.tShell.checked && "shell",
+    els.tPlan.checked && "plan",
+  ].filter(Boolean);
+  els.composerContext.textContent =
+    [leaf, model || endpoint, flags.join(", ")].filter(Boolean).join("  \u00b7  ");
+}
+
+function toggleComposerContext() {
+  const open = els.composer.classList.toggle("show-context");
+  els.composerContext.setAttribute("aria-expanded", String(open));
+}
+
+function toggleAdvancedTabs() {
+  const open = els.rightTabs.classList.toggle("show-advanced");
+  els.btnAdvancedTabs.setAttribute("aria-expanded", String(open));
+  // Closing the group while one of its tabs is showing would hide the active tab, so
+  // fall back to Settings, which is the one that stays out at every width.
+  if (!open && ADVANCED_TABS.has(activeTabName())) switchTab("settings");
 }
 
 // ───────────────────────────── endpoints (LLM CRUD) ─────────────────────────────
@@ -495,6 +321,7 @@ function populateEndpointDropdown() {
   }
   // Restore previous selection if still valid; otherwise leave default.
   if (current && Array.from(sel.options).some(o => o.value === current)) sel.value = current;
+  updateComposerContext();   // the endpoint list arriving moves these without an event
 }
 
 function renderEndpoints() {
@@ -553,26 +380,28 @@ function renderEndpointForm(e, isNew = false) {
   const form = el("form", { class: "endpoint-form" });
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
   const sel = (label, opts, currentVal) => {
+    const id = fieldId("sel");
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const s = el("select", { class: "form-select form-select-sm" });
+    wrap.appendChild(el("label", { for: id }, label));
+    const s = el("select", { class: "form-select form-select-sm", id });
     for (const o of opts) s.appendChild(el("option", { value: o }, o));
     s.value = currentVal || opts[0];
     wrap.appendChild(s);
@@ -697,7 +526,7 @@ function renderEndpointForm(e, isNew = false) {
         body: JSON.stringify(body),
       });
       await loadEndpoints();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
   return form;
 }
@@ -706,7 +535,7 @@ async function activateEndpoint(id) {
   try {
     await api(`/endpoints/${encodeURIComponent(id)}/activate`, { method: "POST" });
     await loadEndpoints();
-  } catch (e) { alert("Activate failed: " + e.message); }
+  } catch (e) { showToast("Activate failed: " + e.message); }
 }
 
 async function deleteEndpoint(id) {
@@ -714,7 +543,7 @@ async function deleteEndpoint(id) {
   try {
     await api(`/endpoints/${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadEndpoints();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 function addEndpointForm() {
@@ -812,19 +641,20 @@ function renderMcpForm(cfg, isNew = false) {
   const form = el("form", { class: "mcp-form endpoint-form" });
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -837,9 +667,10 @@ function renderMcpForm(cfg, isNew = false) {
   const argsF = field("Arguments (space-separated)", { value: (cfg.arguments || []).join(" ") });
   const cwdF = field("Working directory (stdio)", { value: cfg.workingDirectory || "" });
 
+  const envId = fieldId("env");
   const envWrap = el("div", {});
-  envWrap.appendChild(el("label", {}, "Env vars (KEY=VALUE per line)"));
-  const envArea = el("textarea", { class: "form-control form-control-sm", rows: 3 });
+  envWrap.appendChild(el("label", { for: envId }, "Env vars (KEY=VALUE per line)"));
+  const envArea = el("textarea", { class: "form-control form-control-sm", rows: 3, id: envId });
   envArea.value = Object.entries(cfg.environmentVariables || {}).map(([k, v]) => `${k}=${v}`).join("\n");
   envWrap.appendChild(envArea);
 
@@ -894,7 +725,7 @@ function renderMcpForm(cfg, isNew = false) {
       // After config CRUD we also need to reload connections to pick up the change.
       try { await api("/mcp/reload", { method: "POST" }); } catch { /* best effort */ }
       await loadMcpConfig();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
   return form;
 }
@@ -905,7 +736,7 @@ async function deleteMcpServer(name) {
     await api(`/mcp-config/${encodeURIComponent(name)}`, { method: "DELETE" });
     try { await api("/mcp/reload", { method: "POST" }); } catch { /* best effort */ }
     await loadMcpConfig();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 function addMcpForm() {
@@ -935,19 +766,20 @@ function renderTriggerOptions() {
 
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
@@ -964,9 +796,10 @@ function renderTriggerOptions() {
     placeholder: "Wixely, dagger-bot",
   });
 
+  const preId = fieldId("pre");
   const preWrap = el("div", {});
-  preWrap.appendChild(el("label", {}, "Job preamble (system context for triggered jobs)"));
-  const preamble = el("textarea", { class: "form-control form-control-sm", rows: 3 });
+  preWrap.appendChild(el("label", { for: preId }, "Job preamble (system context for triggered jobs)"));
+  const preamble = el("textarea", { class: "form-control form-control-sm", rows: 3, id: preId });
   preamble.value = t.jobPreamble ?? "";
   preWrap.appendChild(preamble);
 
@@ -998,7 +831,7 @@ function renderTriggerOptions() {
         body: JSON.stringify(body),
       });
       await loadTriggers();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
 }
 
@@ -1086,26 +919,28 @@ function renderTriggerSourceForm(s, isNew = false) {
   const form = el("form", { class: "endpoint-form" });
   const field = (label, attrs) => {
     const a = attrs || {};
-    // Checkboxes render as Bootstrap toggle switches — the generic .form-control class
-    // stretches a checkbox into an oversized rectangle, so swap to .form-check + .form-switch
-    // and put the label after the control (which is the switch idiom).
+    const id = fieldId("fld");
+    // Checkboxes render as toggle switches — the generic .form-control class stretches a
+    // checkbox into an oversized rectangle, so swap to .form-check + .form-switch and put
+    // the label after the control (which is the switch idiom).
     if (a.type === "checkbox") {
       const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch" }, a));
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
       wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label" }, label));
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
       return { wrap, inp };
     }
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm" }, a));
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
     wrap.appendChild(inp);
     return { wrap, inp };
   };
   const sel = (label, opts, currentVal) => {
+    const id = fieldId("sel");
     const wrap = el("div", {});
-    wrap.appendChild(el("label", {}, label));
-    const node = el("select", { class: "form-select form-select-sm" });
+    wrap.appendChild(el("label", { for: id }, label));
+    const node = el("select", { class: "form-select form-select-sm", id });
     for (const o of opts) {
       const optAttrs = typeof o === "string" ? { value: o } : { value: o.value };
       const optLabel = typeof o === "string" ? o : o.label;
@@ -1166,7 +1001,7 @@ function renderTriggerSourceForm(s, isNew = false) {
         body: JSON.stringify(body),
       });
       await loadTriggers();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
   return form;
 }
@@ -1176,7 +1011,7 @@ async function deleteTriggerSource(id) {
   try {
     await api(`/triggers/sources/${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadTriggers();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 function addTriggerSourceForm() {
@@ -1253,6 +1088,7 @@ function syncSettingsToToggles() {
   els.tPreview.checked = state.settings.writePreview;
   els.tShell.checked = state.settings.allowShell;
   els.tReadonly.checked = state.settings.readOnly;
+  updateComposerContext();   // settings arriving moves these without an event
 }
 
 async function patchSettings(patch) {
@@ -1510,18 +1346,6 @@ async function discardWrite(absPath) {
 // 6. composer
 // ───────────────────────────────────────────────────────────
 
-function addImage(file) {
-  if (!file.type.startsWith("image/")) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = reader.result;
-    const i = dataUrl.indexOf(",");
-    const base64 = i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
-    state.pendingImages.push({ mediaType: file.type, base64, dataUrl });
-    renderImageStrip();
-  };
-  reader.readAsDataURL(file);
-}
 
 function renderImageStrip() {
   const s = els.imageStrip;
@@ -1557,68 +1381,57 @@ function renderQueue() {
   });
 }
 
-function enqueue(prompt, images) {
-  state.queue.push({ id: Math.random().toString(36).slice(2), prompt, images });
-  renderQueue();
-}
 
-async function dequeueAndRun() {
-  if (state.streaming) return;
-  const next = state.queue.shift();
-  if (!next) return;
-  renderQueue();
-  await runTurn(next.prompt, next.images);
-  if (state.queue.length) dequeueAndRun();
-}
 
 function flashStatus(text, cls) {
   els.statusPill.textContent = text;
   els.statusPill.className = `badge bg-secondary ${cls || ""}`;
 }
 
-async function runTurn(prompt, images) {
-  state.streaming = true;
-  state.lastTurn = { prompt, images };   // remembered so the on-error "retry" button can resend it
-  state.abortCtrl = new AbortController();
-  els.btnSend.classList.add("d-none");
-  els.btnCancel.classList.remove("d-none");
-  flashStatus("streaming", "streaming");
+// Everything the shared turn engine needs to know about this shell: which controls mean
+// "busy", how a status reads, and what a request body looks like here.
+const session = createSession({
+  api,
+  streamPost,
+  state,
+  transcript,
+  host: {
+    onTurnStart() {
+      els.btnSend.classList.add("d-none");
+      els.btnCancel.classList.remove("d-none");
+      flashStatus("streaming", "streaming");
+    },
+    onTurnEnd() {
+      els.btnSend.classList.remove("d-none");
+      els.btnCancel.classList.add("d-none");
+      // Only fall back to "paused" if nothing else has claimed the pill since.
+      if (els.statusPill.classList.contains("streaming")) flashStatus("paused", "paused");
+      refreshJobs();
+      if (els.panes.writes.classList.contains("active")) loadPendingWrites();
+    },
+    onTurnError: () => flashStatus("error", "error"),
+    onJobId: (id) => { els.jobIdLabel.textContent = id; },
+    onSseStatus: (data) => flashStatus(
+      data.cancelled ? "cancelled" : (data.status || "paused").toLowerCase(),
+      data.cancelled ? "error" : "paused"),
+    onPlanUpdate: () => { if (els.panes.plan.classList.contains("active")) loadPlan(); },
+    formatError: (message) => `\n[error: ${message}]`,
+    buildBody: (prompt, images) => ({
+      prompt,
+      model: els.modelInput.value.trim() || null,
+      workingDirectory: els.workingDir.value.trim() || null,
+      images: (images || []).map(({ mediaType, base64 }) => ({ mediaType, base64 })),
+      system: null,
+      endpointId: els.endpointSelect?.value || null,
+    }),
+    onQueueChange: () => renderQueue(),
+    onImagesChange: () => renderImageStrip(),
+    contextInputs: { workingDir: els.workingDir, endpoint: els.endpointSelect },
+  },
+});
 
-  appendUserMessage(prompt, images);
-  beginAssistantMessage();
+const { runTurn, handleSseEvent, enqueue, drainQueue, addImage, loadJob } = session;
 
-  const body = {
-    prompt,
-    model: els.modelInput.value.trim() || null,
-    workingDirectory: els.workingDir.value.trim() || null,
-    images: (images || []).map(({ mediaType, base64 }) => ({ mediaType, base64 })),
-    system: null,
-    endpointId: els.endpointSelect?.value || null,
-  };
-  const path = state.currentJobId
-    ? `/jobs/${encodeURIComponent(state.currentJobId)}/messages/stream`
-    : "/jobs/stream";
-
-  try {
-    await streamPost(path, body, handleSseEvent, state.abortCtrl.signal);
-  } catch (e) {
-    if (e.name !== "AbortError") {
-      console.error(e);
-      appendAnswerChunk(`\n[error: ${e.message}]`);
-      flashStatus("error", "error");
-      showRetryButton();
-    }
-  } finally {
-    state.streaming = false;
-    state.abortCtrl = null;
-    state.currentMsg = null;
-    els.btnSend.classList.remove("d-none");
-    els.btnCancel.classList.add("d-none");
-    if (els.statusPill.classList.contains("streaming")) flashStatus("paused", "paused");
-    refreshJobs();
-    if (els.panes.writes.classList.contains("active")) loadPendingWrites();
-  }
-}
 
 async function onSendClick(forceQueue) {
   const prompt = els.promptBox.value.trim();
@@ -1638,7 +1451,7 @@ async function onSendClick(forceQueue) {
   // Ctrl+Enter from idle still enqueues without starting, useful for batching up several prompts before launching.
   if (forceQueue || state.streaming) {
     enqueue(prompt, images);
-    if (!state.streaming) dequeueAndRun();
+    if (!state.streaming) drainQueue();
     return;
   }
   await runTurn(prompt, images);
@@ -1690,7 +1503,7 @@ async function tryHandleSlashCommand(raw) {
 }
 
 function onCancelClick() {
-  if (state.abortCtrl) state.abortCtrl.abort();
+  session.cancelTurn();
 }
 
 function autoGrowPrompt() {
@@ -1796,7 +1609,7 @@ async function deleteJob(jobId) {
     await api(`/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
     if (state.currentJobId === jobId) newJob();   // clear the transcript + selection if the open job went away
     refreshJobs();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 async function resumeJob(jobId) {
@@ -1816,18 +1629,12 @@ async function selectJob(jobId) {
   els.jobIdLabel.textContent = jobId;
   if (els.btnRefreshJob) els.btnRefreshJob.style.display = "";
   flashStatus("idle");
+  // loadJob renders the history and restores the endpoint + cwd this job was using, so
+  // the next turn stays on the same provider and directory.
   try {
-    const view = await api(`/jobs/${encodeURIComponent(jobId)}`);
-    renderHistory(view.history || []);
-    // Restore the endpoint + cwd this job was using so the next turn stays on the same provider.
-    if (view.workingDirectory) els.workingDir.value = view.workingDirectory;
-    if (els.endpointSelect && view.endpointId !== undefined && view.endpointId !== null) {
-      // Only set when the option still exists.
-      if (Array.from(els.endpointSelect.options).some(o => o.value === view.endpointId)) {
-        els.endpointSelect.value = view.endpointId;
-      }
-    }
+    await loadJob(jobId);
   } catch (e) { console.warn("job load failed", e); clearTranscript(); }
+  updateComposerContext();   // loadJob restores cwd + endpoint without firing events
   renderJobsList();
   if (els.panes.plan.classList.contains("active")) loadPlan();
 }
@@ -1855,43 +1662,6 @@ function newJob() {
 // 8. SSE event dispatch
 // ───────────────────────────────────────────────────────────
 
-function handleSseEvent(name, data) {
-  switch (name) {
-    case "job":
-      state.currentJobId = data.jobId;
-      els.jobIdLabel.textContent = data.jobId;
-      break;
-    case "delta":
-      appendAnswerChunk(data.text || "");
-      break;
-    case "thinking":
-      appendThinkingChunk(data.text || "");
-      break;
-    case "tool_call":
-      appendToolCall(data.id, data.name, data.args);
-      break;
-    case "tool_result":
-      appendToolResult(data.id, data.excerpt || "", data.length || 0);
-      break;
-    case "plan_update":
-      if (els.panes.plan.classList.contains("active")) loadPlan();
-      break;
-    case "status":
-      flashStatus(data.cancelled ? "cancelled" : (data.status || "paused").toLowerCase(),
-        data.cancelled ? "error" : "paused");
-      break;
-    case "usage":
-      setUsageStamp(data);
-      break;
-    case "error":
-      appendAnswerChunk(`\n[error: ${data.message}]`);
-      flashStatus("error", "error");
-      showRetryButton();
-      break;
-    case "done":
-      break;
-  }
-}
 
 // ───────────────────────────────────────────────────────────
 // 9. boot
@@ -1902,16 +1672,38 @@ function wireEvents() {
   for (const btn of els.tabs) {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   }
+  els.btnAdvancedTabs.addEventListener("click", toggleAdvancedTabs);
+  els.composerContext.addEventListener("click", toggleComposerContext);
+  // Keep the summary honest: it is the only view of these while collapsed.
+  for (const n of [els.workingDir, els.modelInput]) n.addEventListener("input", updateComposerContext);
+  for (const n of [els.endpointSelect, els.tPlan, els.tPreview, els.tShell, els.tReadonly]) {
+    n.addEventListener("change", updateComposerContext);
+  }
+  // Arrow keys move between tabs, as a tablist is expected to. The strip is a 4x2 grid,
+  // so Up/Down step a whole row; Left/Right step one and wrap.
+  const tabs = Array.from(els.tabs);
+  for (const btn of tabs) {
+    btn.addEventListener("keydown", (ev) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 4, ArrowUp: -4 }[ev.key];
+      const jump = ev.key === "Home" ? 0 : ev.key === "End" ? tabs.length - 1 : null;
+      if (step === undefined && jump === null) return;
+      ev.preventDefault();
+      const i = jump !== null ? jump
+        : (tabs.indexOf(btn) + step + tabs.length) % tabs.length;
+      switchTab(tabs[i].dataset.tab);
+      tabs[i].focus();
+    });
+  }
 
   // theme + right-pane toggles
   els.btnTheme.addEventListener("click", () => {
     const html = document.documentElement;
-    const next = html.getAttribute("data-bs-theme") === "dark" ? "light" : "dark";
-    html.setAttribute("data-bs-theme", next);
+    const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    html.setAttribute("data-theme", next);
     localStorage.setItem("daggerTheme", next);
   });
   const savedTheme = localStorage.getItem("daggerTheme");
-  if (savedTheme) document.documentElement.setAttribute("data-bs-theme", savedTheme);
+  if (savedTheme) document.documentElement.setAttribute("data-theme", savedTheme);
 
   // Side panes are drawers on phones, in-grid columns on desktop.
   // Same button → different behaviour depending on viewport.
@@ -1925,28 +1717,53 @@ function wireEvents() {
     els.leftPane.classList.remove("open");
     els.rightPane.classList.remove("open");
     syncBackdrop();
+    syncRightExpanded();
+  }
+  // The button's aria-expanded has to track whichever mechanism is in play — the drawer
+  // class on mobile, the grid-collapse class on desktop.
+  function syncRightExpanded() {
+    const open = isMobile()
+      ? els.rightPane.classList.contains("open")
+      : !els.appMain.classList.contains("collapsed-right");
+    els.btnRightToggle.setAttribute("aria-expanded", String(open));
   }
   els.btnRightToggle.addEventListener("click", () => {
     if (isMobile()) {
-      els.leftPane.classList.remove("open");
-      els.rightPane.classList.toggle("open");
+      // One button dismisses whichever sheet is up. It used to swap the jobs sheet for
+      // this one, which left the jobs sheet with no obvious way to close: the button you
+      // reach for is the menu button, and it opened something else instead.
+      if (els.leftPane.classList.contains("open") || els.rightPane.classList.contains("open")) {
+        closeDrawers();
+        return;
+      }
+      els.rightPane.classList.add("open");
       syncBackdrop();
     } else {
       els.appMain.classList.toggle("collapsed-right");
     }
+    syncRightExpanded();
   });
   els.btnLeftToggle.addEventListener("click", () => {
     els.rightPane.classList.remove("open");
     els.leftPane.classList.toggle("open");
     syncBackdrop();
+    syncRightExpanded();
   });
   els.drawerBackdrop.addEventListener("click", closeDrawers);
+  // A sheet is modal, so Escape should dismiss it - that is what mobile gets free from
+  // <dialog>. Only acts when one is actually open, so it does not swallow the key.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    if (!els.leftPane.classList.contains("open") && !els.rightPane.classList.contains("open")) return;
+    closeDrawers();
+  });
   // Collapse drawers automatically when the user picks something from inside them on mobile.
   els.jobsList.addEventListener("click", () => { if (isMobile()) closeDrawers(); });
   els.btnNewJob.addEventListener("click", () => { if (isMobile()) closeDrawers(); });
   els.commandsList.addEventListener("click", () => { if (isMobile()) closeDrawers(); });
   // Resizing past the breakpoint shouldn't leave drawer state stuck.
   mobileQuery.addEventListener("change", closeDrawers);
+  syncRightExpanded();
 
   // toggles
   els.tPlan.addEventListener("change", () => patchSettings({ forcePlan: els.tPlan.checked }));
@@ -2040,6 +1857,9 @@ function wireEvents() {
 async function boot() {
   wireEvents();
   flashStatus("idle");
+  // The tab marked active in the HTML is Endpoints, which lives in the folded group, so
+  // a phone-width first load would otherwise open on a tab it cannot show.
+  revealAdvancedIfNeeded();
   await Promise.allSettled([
     refreshJobs(),
     loadEndpoints(),

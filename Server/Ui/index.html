@@ -1,43 +1,36 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark" data-bs-core="modern">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover is what makes env(safe-area-inset-*) resolve to anything but
+     zero. Without it the notch clearance in app.css would be dead code, and this is
+     the shell phones get. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0e10">
 <title>Dagger Agent</title>
 <link rel="icon" href="/favicon.ico">
-<link rel="stylesheet" href="__BASE__/halfmoon.min.css">
+<link rel="stylesheet" href="__BASE__/tokens.css">
+<link rel="stylesheet" href="__BASE__/primitives.css">
+<link rel="stylesheet" href="__BASE__/controls.css">
 <link rel="stylesheet" href="__BASE__/app.css">
-<script>
-// Server-side user-agent routing handles normal phones. This catches iPadOS and
-// other touch-first browsers that deliberately present a desktop user agent.
-(() => {
-  const params = new URLSearchParams(location.search);
-  const compactTouch = navigator.maxTouchPoints > 1
-    && matchMedia("(pointer: coarse)").matches
-    && Math.min(screen.width, screen.height) <= 1024;
-  if (!params.has("desktop") && (navigator.userAgentData?.mobile || compactTouch)) {
-    location.replace(location.pathname.replace(/\/ui\/?$/, "/mobile") + location.search);
-  }
-})();
-</script>
 </head>
 <body>
 <div class="app-shell">
 
   <header class="app-header">
-    <button id="btn-left-toggle" class="btn btn-sm btn-outline-secondary mobile-only" title="Jobs" type="button">▤</button>
+    <button id="btn-left-toggle" class="btn btn-sm btn-outline-secondary mobile-only" title="Jobs" aria-label="Show jobs" type="button">▤</button>
     <div class="brand">
       <span class="brand-mark">†</span>
       <span class="brand-name">Dagger Agent</span>
     </div>
     <div class="header-status">
-      <span id="status-pill" class="badge bg-secondary">idle</span>
+      <span id="status-pill" class="badge bg-secondary" role="status">idle</span>
       <code id="job-id-label" class="text-muted small"></code>
-      <button id="btn-refresh-job" class="btn btn-sm btn-outline-secondary" title="Reload this job's history from disk (useful after a trigger / auto-resume turn completes in the background)" type="button" style="display:none;">↻</button>
+      <button id="btn-refresh-job" class="btn btn-sm btn-outline-secondary" title="Reload this job's history from disk (useful after a trigger / auto-resume turn completes in the background)" aria-label="Reload this job's history" type="button" style="display:none;">↻</button>
     </div>
     <div class="header-actions">
-      <button id="btn-theme" class="btn btn-sm btn-outline-secondary" title="Toggle light/dark">◐</button>
-      <button id="btn-right-toggle" class="btn btn-sm btn-outline-secondary" title="Show / hide side panel">☰</button>
+      <button id="btn-theme" class="btn btn-sm btn-outline-secondary" title="Toggle light/dark" aria-label="Toggle light or dark theme" type="button">◐</button>
+      <button id="btn-right-toggle" class="btn btn-sm btn-outline-secondary" title="Show / hide side panel" aria-label="Show or hide the side panel" aria-expanded="true" aria-controls="right-pane" type="button">☰</button>
     </div>
   </header>
 
@@ -59,10 +52,11 @@
 
       <div id="transcript" class="transcript" aria-live="polite">
         <div class="empty-state">
+          <div class="empty-mark" aria-hidden="true">&#8224;</div>
           <h3 class="mb-2">Ready when you are.</h3>
-          <p class="text-muted">Submit a prompt below to start a new job, or pick one from the left.</p>
+          <p class="text-muted">Submit a prompt below to start a new job, or reopen an earlier one.</p>
           <ul class="text-muted small empty-tips">
-            <li><kbd>Enter</kbd> sends · <kbd>Shift+Enter</kbd> newline · <kbd>Ctrl+Enter</kbd> queues</li>
+            <li class="keyboard-tip"><kbd>Enter</kbd> sends · <kbd>Shift+Enter</kbd> newline · <kbd>Ctrl+Enter</kbd> queues</li>
             <li>Drag or paste an image into the composer to attach it</li>
             <li>Flip <em>Preview writes</em> to require approval before files change</li>
           </ul>
@@ -78,22 +72,27 @@
 
         <div id="image-strip" class="image-strip is-empty"></div>
 
-        <div class="composer-row composer-meta">
-          <label class="composer-label">cwd</label>
+        <!-- Collapses cwd / endpoint / model / toggles into one line under 780px, where
+             those four rows otherwise eat 38% of the screen. Hidden on desktop. -->
+        <button id="composer-context" class="composer-context" type="button"
+                aria-expanded="false" aria-controls="composer-meta-cwd composer-meta-endpoint composer-toggles"></button>
+
+        <div id="composer-meta-cwd" class="composer-row composer-meta">
+          <label class="composer-label" for="working-dir">cwd</label>
           <input id="working-dir" class="form-control form-control-sm composer-cwd" placeholder="working directory (defaults to launch cwd)" list="working-dirs">
           <datalist id="working-dirs"></datalist>
-          <button id="btn-browse-cwd" class="btn btn-sm btn-outline-secondary" title="Browse the server's filesystem" type="button">📁</button>
+          <button id="btn-browse-cwd" class="btn btn-sm btn-outline-secondary" title="Browse the server's filesystem" aria-label="Browse for a working directory" type="button">📁</button>
         </div>
-        <div class="composer-row composer-meta">
-          <label class="composer-label">endpoint</label>
+        <div id="composer-meta-endpoint" class="composer-row composer-meta">
+          <label class="composer-label" for="endpoint-select">endpoint</label>
           <select id="endpoint-select" class="form-select form-select-sm composer-endpoint" title="Which LLM endpoint to send this turn to. Falls back to the active default.">
             <option value="">(use active default)</option>
           </select>
-          <label class="composer-label">model</label>
+          <label class="composer-label" for="model-input">model</label>
           <input id="model-input" class="form-control form-control-sm composer-model" placeholder="(endpoint default)">
         </div>
 
-        <div class="composer-toggles">
+        <div id="composer-toggles" class="composer-toggles">
           <label class="form-check form-switch composer-toggle" title="Force the agent to make a plan before tool calls">
             <input id="t-plan" type="checkbox" class="form-check-input">
             <span class="form-check-label">Plan</span>
@@ -127,52 +126,55 @@
     </section>
 
     <aside id="right-pane" class="right-pane">
-      <ul class="nav nav-pills nav-fill right-tabs" role="tablist">
-        <li class="nav-item"><button class="nav-link active" data-tab="endpoints" type="button">Endp</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="mcp" type="button">MCP</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="triggers" type="button">Trig</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="tools" type="button">Tools</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="commands" type="button">Cmds</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="settings" type="button">Set</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="plan" type="button">Plan</button></li>
-        <li class="nav-item"><button class="nav-link" data-tab="writes" type="button">Writes</button></li>
+      <ul id="right-tabs" class="nav nav-pills nav-fill right-tabs" role="tablist">
+        <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link active" data-tab="endpoints" type="button" role="tab" id="tab-btn-endpoints" aria-controls="tab-endpoints" aria-selected="true">Endp</button></li>
+        <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="mcp" type="button" role="tab" id="tab-btn-mcp" aria-controls="tab-mcp" aria-selected="false" tabindex="-1">MCP</button></li>
+        <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="triggers" type="button" role="tab" id="tab-btn-triggers" aria-controls="tab-triggers" aria-selected="false" tabindex="-1">Trig</button></li>
+        <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="tools" type="button" role="tab" id="tab-btn-tools" aria-controls="tab-tools" aria-selected="false" tabindex="-1">Tools</button></li>
+        <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="commands" type="button" role="tab" id="tab-btn-commands" aria-controls="tab-commands" aria-selected="false" tabindex="-1">Cmds</button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link" data-tab="settings" type="button" role="tab" id="tab-btn-settings" aria-controls="tab-settings" aria-selected="false" tabindex="-1">Set</button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link" data-tab="plan" type="button" role="tab" id="tab-btn-plan" aria-controls="tab-plan" aria-selected="false" tabindex="-1">Plan</button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link" data-tab="writes" type="button" role="tab" id="tab-btn-writes" aria-controls="tab-writes" aria-selected="false" tabindex="-1">Writes</button></li>
       </ul>
+      <!-- Only rendered under 780px. Desktop has room for all eight tabs at once. -->
+      <button id="btn-advanced-tabs" class="advanced-toggle" type="button"
+              aria-expanded="false" aria-controls="right-tabs">Advanced</button>
       <div class="tab-content right-tab-content">
-        <div id="tab-endpoints" class="tab-pane active">
+        <div id="tab-endpoints" class="tab-pane active" role="tabpanel" aria-labelledby="tab-btn-endpoints" tabindex="0">
           <div class="tab-actions">
             <button id="btn-endpoint-add" class="btn btn-sm btn-outline-primary" type="button">+ Add endpoint</button>
           </div>
           <div id="endpoints-list" class="endpoints-list"></div>
         </div>
-        <div id="tab-mcp" class="tab-pane">
+        <div id="tab-mcp" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-mcp" tabindex="0">
           <div class="tab-actions">
             <button id="btn-mcp-add" class="btn btn-sm btn-outline-primary" type="button">+ Add server</button>
             <button id="btn-mcp-reload" class="btn btn-sm btn-outline-primary" type="button">↻ Reload all</button>
           </div>
           <div id="mcp-list" class="mcp-list"></div>
         </div>
-        <div id="tab-triggers" class="tab-pane">
+        <div id="tab-triggers" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-triggers" tabindex="0">
           <form id="triggers-options-form" class="endpoint-form triggers-options-form"></form>
           <div class="tab-actions">
             <button id="btn-trigger-add" class="btn btn-sm btn-outline-primary" type="button">+ Add source</button>
           </div>
           <div id="triggers-sources-list" class="endpoints-list"></div>
         </div>
-        <div id="tab-tools" class="tab-pane">
+        <div id="tab-tools" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-tools" tabindex="0">
           <div id="tools-list" class="tools-list"></div>
         </div>
-        <div id="tab-commands" class="tab-pane">
+        <div id="tab-commands" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-commands" tabindex="0">
           <ul id="commands-list" class="commands-list"></ul>
         </div>
-        <div id="tab-settings" class="tab-pane">
+        <div id="tab-settings" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-settings" tabindex="0">
           <form id="settings-form" class="settings-form"></form>
         </div>
-        <div id="tab-plan" class="tab-pane">
+        <div id="tab-plan" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-plan" tabindex="0">
           <div id="plan-display" class="plan-display empty">
             <p class="text-muted small">No plan yet for this job. Plans show up when the agent calls <code>make_plan</code>.</p>
           </div>
         </div>
-        <div id="tab-writes" class="tab-pane">
+        <div id="tab-writes" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-writes" tabindex="0">
           <div id="writes-list" class="writes-list empty">
             <p class="text-muted small">No staged writes. Enable <em>Preview writes</em> to require approval before files change.</p>
           </div>
@@ -182,9 +184,9 @@
 
   </main>
 
-  <dialog id="folder-dialog" class="folder-dialog">
+  <dialog id="folder-dialog" class="folder-dialog" aria-labelledby="folder-dialog-title">
     <div class="folder-dialog-head">
-      <h3>Pick a working directory</h3>
+      <h3 id="folder-dialog-title">Pick a working directory</h3>
       <p class="text-muted small">Browsing the server's filesystem. The agent will be jailed to whatever you pick.</p>
     </div>
     <div class="folder-dialog-path">
@@ -197,10 +199,11 @@
     </div>
   </dialog>
 
-  <dialog id="api-key-dialog" class="api-key-dialog">
+  <dialog id="api-key-dialog" class="api-key-dialog" aria-labelledby="api-key-dialog-title">
     <form method="dialog">
-      <h3>API key required</h3>
+      <h3 id="api-key-dialog-title">API key required</h3>
       <p class="text-muted small">The server rejected the request. Enter the API key configured in <code>Auth:ApiKeys</code>.</p>
+      <label for="api-key-input" class="visually-hidden">API key</label>
       <input id="api-key-input" type="password" class="form-control" placeholder="X-Api-Key…" autocomplete="off">
       <div class="dialog-actions">
         <button value="cancel" class="btn btn-sm btn-outline-secondary">Cancel</button>
@@ -212,6 +215,8 @@
 </div>
 <!-- Markdown renderer + sanitiser. Loaded before app.js so the module can read the
      globals they install (window.marked, window.DOMPurify). -->
+<div id="toast" class="toast" role="status" hidden></div>
+
 <script src="__BASE__/marked.min.js"></script>
 <script src="__BASE__/purify.min.js"></script>
 <script type="module" src="__BASE__/app.js"></script>

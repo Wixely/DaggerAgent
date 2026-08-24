@@ -1,0 +1,55 @@
+/* Design tokens shared by every DaggerAgent shell.
+   Extracted verbatim from mobile.css; mobile is the reference implementation.
+   Dark is the default; light is opt-in via <html data-theme="light">. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0e0e10;
+  --surface: #151518;
+  --surface-raised: #1b1b1f;
+  --surface-soft: #222228;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --text: #f5f3ef;
+  --muted: #9d9ca4;
+  --faint: #6f6e76;
+  --accent: #df4354;
+  --accent-strong: #f15363;
+  --accent-soft: rgba(223, 67, 84, 0.14);
+  --success: #51c98f;
+  --warning: #e8ad5d;
+  --danger: #ff6877;
+  --shadow: 0 -24px 80px rgba(0, 0, 0, 0.48);
+
+  /* Scrollbars. The track stays transparent so a scrollable region keeps whatever
+     surface it sits on; only the thumb is drawn. */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+  --radius: 18px;
+  --topbar-height: 60px;
+
+  /* Named so both shells can reference them. The sans stack was already applied here
+     directly; the mono stack was previously supplied by Halfmoon as --bs-font-monospace
+     and is now owned here. Values unchanged. */
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-sans);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f3ef;
+  --surface: #fbfaf8;
+  --surface-raised: #ffffff;
+  --surface-soft: #eeebe6;
+  --line: rgba(27, 25, 23, 0.1);
+  --line-strong: rgba(27, 25, 23, 0.18);
+  --text: #1d1b1a;
+  --muted: #6c6863;
+  --faint: #8e8982;
+  --accent-soft: rgba(207, 48, 66, 0.1);
+  --shadow: 0 -24px 80px rgba(50, 43, 38, 0.18);
+  --scrollbar-thumb: rgba(27, 25, 23, 0.22);
+  --scrollbar-thumb-hover: rgba(27, 25, 23, 0.36);
+}

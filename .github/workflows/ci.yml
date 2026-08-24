@@ -1,0 +1,106 @@
+name: CI
+
+# The release workflow only runs on a tag, so until now nothing built on a branch and a
+# break was not visible until the moment it was being shipped. This runs on every push
+# and pull request instead.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  DOTNET_VERSION: 10.0.x
+
+jobs:
+  build:
+    name: Build and smoke test (linux)
+    runs-on: ubuntu-latest
+    # Credentials for the Wixely/acp-csharp GitHub Packages feed (see nuget.config).
+    env:
+      GITHUB_PACKAGES_USER: ${{ github.actor }}
+      GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore DaggerAgent.csproj
+
+      - name: Build
+        run: dotnet build DaggerAgent.csproj -c Release --no-restore
+
+      # The web UI is served out of the assembly's embedded resources, and their names are
+      # produced by an MSBuild transform over %(RecursiveDir). That separator is
+      # platform-dependent, so a name that resolves on Windows can 404 on Linux and take
+      # the whole UI down with it - app.js dies on its first failed import. A compile says
+      # nothing about that, so assert the assets actually resolve from a running server.
+      - name: Smoke test the served UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet run --project DaggerAgent.csproj -c Release --no-build -- serve &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://localhost:5090/agent/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS -o /dev/null http://localhost:5090/agent/healthz \
+            || { echo "server never became healthy"; exit 1; }
+
+          fail=0
+          check() {                       # path, expected status
+            actual="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:5090$1")"
+            if [[ "${actual}" != "$2" ]]; then
+              echo "  FAIL $1 -> ${actual} (expected $2)"
+              fail=1
+            else
+              echo "  ok   $1 -> ${actual}"
+            fi
+          }
+
+          echo "shell and assets:"
+          check /agent/ui 200
+          check /agent/ui/app.js 200
+          check /agent/ui/app.css 200
+          check /agent/ui/tokens.css 200
+          check /agent/ui/primitives.css 200
+          check /agent/ui/controls.css 200
+
+          echo "core modules (the subdirectory case that broke on linux):"
+          for m in dom api markdown transcript session toast; do
+            check "/agent/ui/core/${m}.js" 200
+          done
+
+          echo "retired mobile shell:"
+          check /agent/ui/mobile.js 404
+          check /agent/mobile 302
+
+          # A 200 on app.js is not enough: the resource could resolve while the module
+          # graph underneath it does not. Confirm the imports name files that are served.
+          echo "imports declared by app.js all resolve:"
+          # Collect first, then loop in this shell. Piping into `while read` runs the
+          # loop in a subshell, where a failure sets nothing the script can act on.
+          imports="$(curl -fsS http://localhost:5090/agent/ui/app.js \
+            | grep -oE 'core/[a-z]+\.js' | sort -u || true)"
+          if [[ -z "${imports}" ]]; then
+            echo "  FAIL app.js declared no core imports - the file or the pattern is wrong"
+            fail=1
+          fi
+          for path in ${imports}; do
+            check "/agent/ui/${path}" 200
+          done
+
+          exit "${fail}"

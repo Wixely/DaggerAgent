@@ -1,41 +1,110 @@
 /* ─────────────────────────── shell layout ─────────────────────────── */
 
+/* Desktop-only layout metrics. Colour, type and radius come from tokens.css so both
+   shells stay in step; nothing here should introduce a new colour. */
 :root {
   --left-pane-width: 240px;
   --right-pane-width: 340px;
   --header-height: 48px;
-  --composer-bg: var(--bs-body-bg);
-  --dagger-mark: #c92f43;
+  --composer-bg: var(--bg);
+  /* Was its own #c92f43. Pointed at the shared accent so the brand red is one value
+     across both shells and follows the light theme. */
+  --dagger-mark: var(--accent);
 }
 
-html, body { height: 100%; margin: 0; overflow: hidden; }
+/* Halfmoon used to set the page background and body colour. Owned here now, matching
+   what mobile.css does, so text is the warm --text rather than the UA's plain white. */
+html, body {
+  height: 100%; margin: 0; overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  /* Touch behaviour, carried over from mobile.css. Inert with a mouse, and this shell
+     is reachable on a phone through ?desktop=1, which exists precisely so the full
+     configuration UI stays available there. */
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+button, a { -webkit-touch-callout: none; }
 body { font-feature-settings: "ss01"; }
 
 .app-shell {
   display: grid;
   grid-template-rows: var(--header-height) 1fr;
   height: 100vh;
+  /* dvh tracks a mobile URL bar collapsing and expanding; vh does not, so on a phone
+     the composer would sit under the bar until you scrolled. Ordered so anything
+     without dvh support keeps the vh value. Mobile has always used dvh. */
+  height: 100dvh;
 }
 
+/* Translucent over the scrolling content, as mobile's topbar is. */
 .app-header {
+  position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 0 16px;
-  border-bottom: 1px solid var(--bs-border-color);
-  background: var(--bs-tertiary-bg);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   flex-shrink: 0;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.brand-mark { color: var(--dagger-mark); font-size: 1.3rem; line-height: 1; }
-.brand-name { letter-spacing: 0.02em; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; }
+/* The dagger sits in an accent tile with a soft throw, the way mobile draws it —
+   sized down from mobile's 27px to suit the shorter 48px desktop header. */
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--accent);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 22%, transparent);
+  color: #fff;
+  font-family: Georgia, serif;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+.brand-name { letter-spacing: -0.01em; }
 .header-status { flex: 1; display: flex; align-items: center; gap: 10px; }
 .header-actions { display: flex; align-items: center; gap: 6px; }
 
-#status-pill { font-family: var(--bs-font-monospace); text-transform: lowercase; }
-#status-pill.streaming { background: var(--bs-primary); color: #fff; }
-#status-pill.error     { background: var(--bs-danger); color: #fff; }
-#status-pill.paused    { background: var(--bs-success); color: #fff; }
+/* Status reads as a haloed dot plus a word, matching mobile. The dot colour is the
+   whole signal, so the pill itself stays neutral instead of flooding with colour. */
+#status-pill {
+  gap: 6px;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+#status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 13%, transparent);
+}
+#status-pill.streaming { color: var(--accent-strong); }
+#status-pill.streaming::before {
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+  animation: dagger-pulse 1.2s ease-in-out infinite;
+}
+#status-pill.error { color: var(--danger); }
+#status-pill.error::before {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 13%, transparent);
+}
+/* Paused is a hold, not a success — mobile uses the warning tone for it. */
+#status-pill.paused::before {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 13%, transparent);
+}
+
+@keyframes dagger-pulse { 50% { opacity: 0.35; transform: scale(0.72); } }
 
 .app-main {
   display: grid;
@@ -48,60 +117,74 @@ body { font-feature-settings: "ss01"; }
 /* ─────────────────────────── left pane (jobs) ─────────────────────────── */
 
 .left-pane {
-  border-right: 1px solid var(--bs-border-color);
+  border-right: 1px solid var(--line);
   display: flex; flex-direction: column;
   min-height: 0;
-  background: var(--bs-body-bg);
+  background: var(--bg);
 }
-.pane-header { padding: 10px; border-bottom: 1px solid var(--bs-border-color); }
-.pane-search { padding: 8px 10px; border-bottom: 1px solid var(--bs-border-color); }
+.pane-header { padding: 10px; border-bottom: 1px solid var(--line); }
+.pane-search { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+/* Mobile lists jobs as separated cards. The desktop rail is 240px and shows a lot
+   more of them, so these take the card's rounding and outlined-active state without
+   the full padding — the density stays, the language matches. */
 .job-list {
-  list-style: none; margin: 0; padding: 6px 0;
+  list-style: none; margin: 0; padding: 6px;
+  display: grid; gap: 4px; align-content: start;
   overflow-y: auto; flex: 1; min-height: 0;
 }
 .job-list .job-item {
-  padding: 8px 12px; cursor: pointer; border-left: 3px solid transparent;
+  padding: 8px 10px; cursor: pointer;
   display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid transparent;
+  border-radius: 11px;
   font-size: 0.85rem;
 }
-.job-list .job-item:hover { background: var(--bs-tertiary-bg); }
-/* Selected job: a brand-tinted background (distinct from the neutral :hover tint above),
-   a solid brand left-bar and a bolder title, so the active job is unmistakable. */
+.job-list .job-item:hover { border-color: var(--line); background: var(--surface); }
+/* Selected job: mobile's accent-soft fill and accent border. */
 .job-list .job-item.active {
-  background: rgba(201, 47, 67, 0.15);
-  border-left-color: var(--dagger-mark);
-  box-shadow: inset 0 0 0 1px rgba(201, 47, 67, 0.25);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
 }
 .job-list .job-item.active > span:first-child { font-weight: 600; }
 /* The job a context menu is currently acting on. */
 .job-list .job-item.context-target { outline: 1px dashed var(--dagger-mark); outline-offset: -3px; }
-.job-list .job-item.interrupted { border-left-color: var(--bs-warning); }
-.job-list .job-id { font-family: var(--bs-font-monospace); font-size: 0.75rem; color: var(--bs-secondary-color); }
+/* An inset bar rather than a left border — the row is a rounded card now, and a
+   1px coloured edge on it was too faint to register. */
+.job-list .job-item.interrupted { box-shadow: inset 3px 0 0 var(--warning); }
+.job-list .job-id { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); }
 .job-list .job-status { font-size: 0.7rem; text-transform: lowercase; }
 
 /* ─────────────────────────── right-click context menu ─────────────────────────── */
 .context-menu {
   position: fixed; z-index: 1080; min-width: 168px; padding: 4px;
-  background: var(--bs-body-bg); border: 1px solid var(--bs-border-color);
-  border-radius: 6px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28); font-size: 0.85rem;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28); font-size: 0.85rem;
 }
 .context-menu .cm-item {
   display: block; width: 100%; text-align: left; padding: 6px 10px;
-  border: 0; background: transparent; color: var(--bs-body-color);
-  border-radius: 4px; cursor: pointer;
+  border: 0; background: transparent; color: var(--text);
+  border-radius: 8px; cursor: pointer;
 }
-.context-menu .cm-item:hover { background: var(--bs-tertiary-bg); }
-.context-menu .cm-item.danger { color: var(--bs-danger); }
-.context-menu .cm-item.danger:hover { background: var(--bs-danger); color: #fff; }
-.context-menu .cm-sep { height: 1px; margin: 4px 2px; background: var(--bs-border-color); }
+.context-menu .cm-item:hover { background: var(--surface-soft); }
+.context-menu .cm-item.danger { color: var(--danger); }
+.context-menu .cm-item.danger:hover { background: var(--danger); color: #fff; }
+.context-menu .cm-sep { height: 1px; margin: 4px 2px; background: var(--line); }
 
 /* ─────────────────────────── center pane (transcript + composer) ─────────────────────────── */
 
+/* The accent glow mobile hangs above its column, retuned for this one.
+   Mobile's `circle … transparent 36%` is sized against a <=760px column; the same
+   figures over a ~1000px pane make a blob that washes the whole transcript. An
+   ellipse pinned to the top edge keeps it a hint of warmth behind the first screen
+   of text, which is what it reads as on the phone. */
 .center-pane {
   display: grid;
   grid-template-rows: 1fr auto;
   min-height: 0;
-  background: var(--bs-body-bg);
+  background:
+    radial-gradient(ellipse 52% 34% at 50% -6%,
+      color-mix(in srgb, var(--accent) 6%, transparent), transparent 72%),
+    var(--bg);
 }
 
 .transcript {
@@ -110,26 +193,66 @@ body { font-feature-settings: "ss01"; }
   scroll-behavior: smooth;
 }
 
-.empty-state { max-width: 480px; margin: 80px auto; text-align: center; color: var(--bs-secondary-color); }
+.empty-state { max-width: 480px; margin: 80px auto; text-align: center; color: var(--muted); }
+/* Mobile's gradient-filled dagger tile. Decorative, so it is hidden from the
+   accessibility tree by aria-hidden on the element itself. */
+.empty-mark {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 22px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 17px;
+  background: linear-gradient(145deg, var(--accent-soft), transparent);
+  color: var(--accent-strong);
+  font-family: Georgia, serif;
+  font-size: 31px;
+  line-height: 1;
+}
+.empty-state h3 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.03em; color: var(--text); }
 .empty-state ul.empty-tips { list-style: none; padding: 0; margin-top: 12px; text-align: left; }
 .empty-state ul.empty-tips li { padding: 4px 0; }
 
 .msg { margin-bottom: 18px; max-width: 850px; }
+/* Raised and outlined, with mobile's asymmetric corner, so the user's turn reads as
+   a card rather than a tinted block. */
 .msg.user {
-  margin-left: auto; background: var(--bs-tertiary-bg);
-  border-radius: 12px 12px 4px 12px;
+  width: fit-content;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 17px 17px 4px 17px;
+  background: var(--surface-raised);
   padding: 10px 14px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+/* Mobile marks the assistant with the dagger alone — no rule down the side. The
+   glyph is enough, and dropping the bar stops every reply looking like a callout. */
 .msg.assistant {
-  background: transparent;
-  padding: 4px 4px 4px 28px;
-  border-left: 2px solid var(--dagger-mark);
   position: relative;
+  background: transparent;
+  padding: 2px 4px 4px 24px;
 }
 .msg.assistant::before {
-  content: "†"; color: var(--dagger-mark); position: absolute; left: 6px; top: 2px;
-  font-weight: 600;
+  content: "†";
+  position: absolute;
+  left: 2px;
+  top: 1px;
+  color: var(--accent);
+  font-family: Georgia, serif;
+  font-size: 18px;
+  line-height: 1.3;
+}
+/* Caret while the first token is still in flight. */
+.msg .answer:empty::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: dagger-pulse 0.9s infinite;
 }
 .msg .answer { white-space: pre-wrap; word-wrap: break-word; }
 .msg .answer.markdown-body { white-space: normal; }   /* markdown handles its own line breaks */
@@ -154,35 +277,52 @@ body { font-feature-settings: "ss01"; }
 .markdown-body li { margin: 2px 0; }
 .markdown-body li > p { margin: 0; }
 
-.markdown-body a { color: var(--bs-link-color, var(--bs-primary)); text-decoration: underline; }
-.markdown-body a:hover { color: var(--bs-link-hover-color, var(--bs-primary)); }
+.markdown-body a {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.markdown-body a:hover { color: var(--accent); }
 
+/* An accent rule and no fill, as mobile draws it — the tinted block competed with
+   code blocks for the same visual slot. */
 .markdown-body blockquote {
-  margin: 6px 0; padding: 4px 10px;
-  border-left: 3px solid var(--bs-border-color);
-  color: var(--bs-secondary-color);
-  background: var(--bs-tertiary-bg);
+  margin: 8px 0; padding: 1px 0 1px 12px;
+  border-left: 2px solid var(--accent);
+  color: var(--muted);
 }
 
 .markdown-body code {
-  font-family: var(--bs-font-monospace);
-  font-size: 0.88em;
-  padding: 1px 5px;
-  background: var(--bs-tertiary-bg);
-  border-radius: 3px;
-  color: var(--bs-body-color);
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  padding: 0.13em 0.34em;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
 }
+/* Code sits on its own near-black slab in both themes, so snippets read the same
+   whichever theme you are in. Mirrors mobile. */
 .markdown-body pre {
-  margin: 6px 0;
-  padding: 10px 12px;
-  background: var(--bs-tertiary-bg);
-  border-radius: 6px;
+  margin: 9px 0;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #09090b;
   overflow-x: auto;
+  /* Dark in both themes, so the scrollbar cannot follow the page palette: the light
+     theme's near-black thumb would be invisible on this slab. */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
   font-size: 0.85rem;
 }
+:root[data-theme="light"] .markdown-body pre { background: #262427; color: #f5f3ef; }
 .markdown-body pre code {
   padding: 0;
+  border: 0;
   background: transparent;
+  color: inherit;
   font-size: inherit;
   white-space: pre;
 }
@@ -195,87 +335,124 @@ body { font-feature-settings: "ss01"; }
 }
 .markdown-body th, .markdown-body td {
   padding: 4px 10px;
-  border: 1px solid var(--bs-border-color);
+  border: 1px solid var(--line);
   text-align: left;
 }
-.markdown-body th { background: var(--bs-tertiary-bg); font-weight: 600; }
+.markdown-body th { background: var(--surface-soft); font-weight: 600; }
 
 .markdown-body hr {
-  border: 0; border-top: 1px solid var(--bs-border-color);
+  border: 0; border-top: 1px solid var(--line);
   margin: 12px 0;
 }
 
-.markdown-body img { max-width: 100%; height: auto; border-radius: 4px; }
+.markdown-body img { max-width: 100%; height: auto; border-radius: 8px; }
 
 .markdown-body strong { font-weight: 600; }
 .markdown-body em { font-style: italic; }
-.msg .thinking-block { margin: 6px 0; }
+/* Mobile hangs both of these off one quiet hairline rail with no fill, so the
+   machinery recedes behind the answer instead of boxing itself out. Desktop keeps
+   its wrapped, full-width args and results — only the framing changes. */
+.msg .thinking-block, .tool-call {
+  margin: 8px 0;
+  border-left: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.msg .thinking-block { padding: 3px 0 3px 10px; }
 .msg .thinking-block summary {
-  cursor: pointer; color: var(--bs-secondary-color); font-size: 0.8rem;
+  cursor: pointer; font-weight: 650; color: var(--muted);
   user-select: none;
 }
 .msg .thinking-block .thinking-body {
-  margin: 4px 0 0; padding: 8px 10px;
-  background: var(--bs-tertiary-bg);
-  border-left: 2px solid var(--bs-border-color);
-  font-size: 0.85rem; color: var(--bs-secondary-color);
-  white-space: pre-wrap; font-family: var(--bs-font-monospace);
+  max-height: 260px; overflow: auto;
+  margin: 7px 0 0; padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--faint);
+  font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.5;
+  white-space: pre-wrap;
 }
 
-.tool-call {
-  display: block; margin: 6px 0; padding: 6px 10px;
-  background: var(--bs-tertiary-bg);
-  border-radius: 6px;
-  border-left: 2px solid var(--bs-primary);
-  font-family: var(--bs-font-monospace); font-size: 0.82rem;
-}
-.tool-call .tc-name { color: var(--bs-primary); font-weight: 600; }
+.tool-call { display: grid; gap: 2px; padding: 5px 0 5px 10px; }
+.tool-call .tc-name { color: var(--muted); font-weight: 700; font-family: var(--font-mono); }
 .tool-call .tc-args, .tool-call .tc-result {
-  display: block; color: var(--bs-secondary-color);
+  display: block; color: var(--faint);
+  font-family: var(--font-mono); font-size: 0.7rem; line-height: 1.45;
   white-space: pre-wrap; word-wrap: break-word;
 }
-.tool-call .tc-result { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--bs-border-color); }
+/* No rule above the result: desktop's tool calls run the full reading width, so a
+   border there drew an 800px line that read as a divider between messages. Spacing
+   separates them, as it does on mobile. */
+.tool-call .tc-result { margin-top: 5px; }
 
 .msg-footer {
-  margin-top: 6px; font-size: 0.75rem; color: var(--bs-secondary-color);
+  margin-top: 6px; font-size: 0.75rem; color: var(--muted);
   display: flex; gap: 12px; align-items: center;
 }
 .msg-footer .copy-btn,
 .msg-footer .retry-btn {
-  background: transparent; border: none; color: var(--bs-secondary-color);
+  background: transparent; border: none; color: var(--muted);
   font-size: 0.75rem; padding: 0; cursor: pointer;
 }
 .msg-footer .copy-btn:hover,
-.msg-footer .retry-btn:hover { color: var(--bs-body-color); }
+.msg-footer .retry-btn:hover { color: var(--text); }
 
 /* ─────────────────────────── composer ─────────────────────────── */
 
+/* Translucent over the transcript, as mobile's composer-wrap is. */
 .composer {
-  border-top: 1px solid var(--bs-border-color);
-  padding: 10px 16px 12px;
-  background: var(--composer-bg);
+  position: relative;
+  z-index: 8;
+  border-top: 1px solid var(--line);
+  /* Bottom padding clears the input pill's shadow and rounded edge. */
+  padding: 10px 16px 16px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   display: flex; flex-direction: column; gap: 8px;
 }
-.composer.drag-over { background: var(--bs-primary-bg-subtle); outline: 2px dashed var(--bs-primary); }
+.composer.drag-over { background: var(--accent-soft); outline: 2px dashed var(--accent); }
+
+/* Desktop keeps its cwd / endpoint / toggle rows above the input, so the floating
+   pill treatment goes on the input row itself rather than the whole composer. */
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 19px;
+  background: var(--surface-raised);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.composer-input-row:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 
 .queue-strip {
-  border: 1px dashed var(--bs-border-color); border-radius: 6px;
+  border: 1px dashed var(--line); border-radius: 11px;
   padding: 6px 8px; font-size: 0.82rem;
 }
 .queue-strip.is-empty { display: none; }
-.queue-strip-title { font-weight: 600; color: var(--bs-secondary-color); font-size: 0.75rem; margin-bottom: 4px; }
+.queue-strip-title { font-weight: 600; color: var(--muted); font-size: 0.75rem; margin-bottom: 4px; }
 .queue-list { list-style: none; padding: 0; margin: 0; }
 .queue-list li { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
 .queue-list li .q-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.queue-list li .q-btn { background: transparent; border: none; color: var(--bs-secondary-color); padding: 0 4px; cursor: pointer; }
-.queue-list li .q-btn:hover { color: var(--bs-body-color); }
+.queue-list li .q-btn { background: transparent; border: none; color: var(--muted); padding: 0 4px; cursor: pointer; }
+.queue-list li .q-btn:hover { color: var(--text); }
 
 .image-strip { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Was two inline styles set by appendUserMessage. display:flex duplicated the rule
+   above; the margin did not, so it moves here rather than being lost. */
+.msg.user .image-strip { margin-bottom: 6px; }
 .image-strip.is-empty { display: none; }
 .image-strip .img-thumb {
   position: relative; width: 60px; height: 60px;
-  border: 1px solid var(--bs-border-color); border-radius: 4px;
-  background: var(--bs-tertiary-bg); overflow: hidden;
+  border: 1px solid var(--line); border-radius: 11px;
+  background: var(--surface-soft); overflow: hidden;
 }
 .image-strip .img-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .image-strip .img-thumb .rm {
@@ -285,34 +462,63 @@ body { font-feature-settings: "ss01"; }
 }
 
 .composer-row { display: flex; gap: 6px; align-items: center; }
-.composer-label { font-size: 0.7rem; color: var(--bs-secondary-color); margin: 0; text-transform: uppercase; letter-spacing: 0.04em; }
-.composer-cwd { flex: 2; font-family: var(--bs-font-monospace); font-size: 0.8rem; }
+.composer-label { font-size: 0.7rem; color: var(--muted); margin: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+.composer-cwd { flex: 2; font-family: var(--font-mono); font-size: 0.8rem; }
 .composer-model { flex: 1; font-size: 0.8rem; }
 
 .composer-toggles { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 0.82rem; }
-.composer-toggle { display: flex; align-items: center; gap: 6px; padding-left: 2.4em; margin: 0; }
+/* No padding-left here: Bootstrap needed 2.4em to clear an absolutely-positioned
+   check input. Ours is a flex item, so that space was just a gap. */
+.composer-toggle { display: flex; align-items: center; gap: 8px; margin: 0; }
 .composer-toggle-right { margin-left: auto; }
-.composer-toggle .form-check-label { user-select: none; }
+/* The flex gap already spaces these; drop the inline margin controls.css adds for the
+   JS-built forms so the composer doesn't get it twice. */
+.composer-toggle .form-check-label { margin-left: 0; user-select: none; }
 
-.composer-input-row { display: flex; gap: 8px; align-items: flex-end; }
+/* The pill above draws the frame, so the textarea itself goes bare — otherwise you
+   see a box inside a box. Same arrangement as mobile's .composer textarea. */
 .prompt-box {
+  flex: 1;
+  min-width: 0;
   resize: none; min-height: 64px; max-height: 240px;
-  font-family: var(--bs-font-monospace); font-size: 0.9rem;
+  padding: 7px 8px 6px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-family: var(--font-mono); font-size: 0.9rem;
 }
+.prompt-box:focus { border: 0; outline: 0; box-shadow: none; }
+.prompt-box::placeholder { color: var(--faint); }
 .composer-buttons { display: flex; flex-direction: column; gap: 6px; min-width: 80px; }
 
 /* ─────────────────────────── right pane (tabs) ─────────────────────────── */
 
 .right-pane {
-  border-left: 1px solid var(--bs-border-color);
+  border-left: 1px solid var(--line);
   display: flex; flex-direction: column;
   min-height: 0;
-  background: var(--bs-body-bg);
+  background: var(--bg);
 }
-.right-tabs { padding: 8px 8px 0; gap: 4px; border-bottom: 1px solid var(--bs-border-color); }
+/* Eight tabs never fitted on one row in a 340px pane; they used to wrap into a ragged
+   second line with one stretched pill. A fixed 4-column grid gives a tidy 4x2 block. */
+.right-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 8px 8px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.right-tabs .nav-item { min-width: 0; }
+/* The Advanced group only exists in the narrow branch; at desktop width all eight
+   tabs fit and the toggle would just be a control that does nothing. */
+.advanced-toggle { display: none; }
+/* Same story: desktop has the room to show cwd, endpoint, model and the toggles
+   outright, so the summary line only exists in the narrow branch. */
+.composer-context { display: none; }
 .right-tabs .nav-link {
-  font-size: 0.78rem; padding: 4px 6px; border-radius: 4px;
-  color: var(--bs-secondary-color);
+  font-size: 0.78rem; padding: 5px 6px; border-radius: 9px;
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .right-tabs .nav-link.active { background: var(--dagger-mark); color: #fff; }
 
@@ -321,39 +527,42 @@ body { font-feature-settings: "ss01"; }
 .tab-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 
 .endpoints-list .endpoint-card {
-  border: 1px solid var(--bs-border-color); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 11px;
   padding: 8px 10px; margin-bottom: 8px;
+  background: var(--surface);
   font-size: 0.82rem;
 }
+/* One accent border plus a soft tint, rather than the old border-on-top-of-ring that
+   read as an error state. */
 .endpoints-list .endpoint-card.is-active {
-  border-color: var(--dagger-mark);
-  box-shadow: 0 0 0 1px var(--dagger-mark);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--accent-soft);
 }
 .endpoints-list .endpoint-head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .endpoints-list .endpoint-name { font-weight: 600; flex: 1; }
 .endpoints-list .endpoint-provider {
-  font-size: 0.7rem; padding: 1px 6px; border-radius: 3px;
-  background: var(--bs-tertiary-bg); color: var(--bs-secondary-color);
+  font-size: 0.7rem; padding: 1px 6px; border-radius: 999px;
+  background: var(--surface-soft); color: var(--muted);
   text-transform: lowercase;
 }
-.endpoints-list .endpoint-meta { font-size: 0.72rem; color: var(--bs-secondary-color); margin-top: 2px; word-break: break-all; }
+.endpoints-list .endpoint-meta { font-size: 0.72rem; color: var(--muted); margin-top: 2px; word-break: break-all; }
 .endpoints-list .endpoint-actions { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
 .endpoints-list .endpoint-actions .btn { padding: 0.18rem 0.5rem; font-size: 0.72rem; }
 .endpoints-list .endpoint-form, .mcp-list .mcp-card .mcp-form {
   display: flex; flex-direction: column; gap: 6px;
   margin-top: 6px; padding-top: 6px;
-  border-top: 1px dashed var(--bs-border-color);
+  border-top: 1px dashed var(--line);
 }
 .endpoints-list .endpoint-cli-block {
   display: flex; flex-direction: column; gap: 6px;
   padding-top: 4px;
-  border-top: 1px dotted var(--bs-border-color);
+  border-top: 1px dotted var(--line);
 }
 .endpoints-list .endpoint-cli-heading { text-transform: uppercase; letter-spacing: 0.04em; }
 .endpoints-list .endpoint-form .row-2, .mcp-list .mcp-form .row-2 { display: flex; gap: 6px; }
 .endpoints-list .endpoint-form .row-2 > *, .mcp-list .mcp-form .row-2 > * { flex: 1; }
 .endpoints-list .endpoint-form label, .mcp-list .mcp-form label {
-  font-size: 0.7rem; color: var(--bs-secondary-color);
+  font-size: 0.7rem; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.04em; margin: 0;
 }
 .endpoints-list .endpoint-form input, .endpoints-list .endpoint-form select,
@@ -366,7 +575,7 @@ body { font-feature-settings: "ss01"; }
 }
 
 .mcp-list .mcp-card {
-  border: 1px solid var(--bs-border-color); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 11px;
   padding: 8px 10px; margin-bottom: 8px;
   font-size: 0.82rem;
 }
@@ -375,50 +584,70 @@ body { font-feature-settings: "ss01"; }
 }
 .mcp-list .mcp-card .mcp-actions .btn { padding: 0.18rem 0.5rem; font-size: 0.7rem; }
 .mcp-list .mcp-name { font-weight: 600; }
-.mcp-list .mcp-meta { color: var(--bs-secondary-color); font-size: 0.72rem; margin-top: 2px; word-break: break-all; }
+.mcp-list .mcp-meta { color: var(--muted); font-size: 0.72rem; margin-top: 2px; word-break: break-all; }
 .mcp-list .mcp-tools { margin-top: 6px; padding-left: 0; list-style: none; }
 .mcp-list .mcp-tools li {
-  padding: 2px 0; font-family: var(--bs-font-monospace); font-size: 0.72rem;
-  color: var(--bs-body-color);
+  padding: 2px 0; font-family: var(--font-mono); font-size: 0.72rem;
+  color: var(--text);
 }
-.mcp-list .mcp-tools li small { display: block; color: var(--bs-secondary-color); font-family: var(--bs-font-sans-serif); margin-left: 4px; }
+.mcp-list .mcp-tools li small { display: block; color: var(--muted); font-family: var(--font-sans); margin-left: 4px; }
 
 .status-badge {
-  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  display: inline-block; padding: 1px 6px; border-radius: 999px;
   font-size: 0.7rem; text-transform: lowercase;
-  background: var(--bs-secondary-bg); color: var(--bs-secondary-color);
+  background: var(--surface); color: var(--muted);
 }
-.status-badge.connected { background: var(--bs-success); color: #fff; }
-.status-badge.failed    { background: var(--bs-danger);  color: #fff; }
-.status-badge.disabled  { background: var(--bs-secondary); color: #fff; }
+.status-badge.connected { background: var(--success); color: #fff; }
+.status-badge.failed    { background: var(--danger);  color: #fff; }
+.status-badge.disabled  { background: var(--muted); color: #fff; }
 
 .tools-list .tools-group { margin-bottom: 14px; }
 .tools-list .tools-group h6 {
   font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--bs-secondary-color); padding-bottom: 4px;
-  border-bottom: 1px solid var(--bs-border-color); margin-bottom: 6px;
+  color: var(--muted); padding-bottom: 4px;
+  border-bottom: 1px solid var(--line); margin-bottom: 6px;
 }
 .tools-list .tool {
   display: block; padding: 4px 0;
-  font-family: var(--bs-font-monospace); font-size: 0.78rem;
+  font-family: var(--font-mono); font-size: 0.78rem;
 }
-.tools-list .tool small { display: block; color: var(--bs-secondary-color); font-family: var(--bs-font-sans-serif); margin-left: 4px; }
+.tools-list .tool small { display: block; color: var(--muted); font-family: var(--font-sans); margin-left: 4px; }
 .tools-list .tool.disabled { opacity: 0.45; }
 
 .commands-list { list-style: none; padding: 0; margin: 0; }
 .commands-list li {
-  padding: 6px 8px; border-bottom: 1px solid var(--bs-border-color); cursor: pointer;
+  padding: 6px 8px; border-bottom: 1px solid var(--line); cursor: pointer;
   display: flex; flex-direction: column; gap: 2px;
 }
-.commands-list li:hover { background: var(--bs-tertiary-bg); }
-.commands-list .cmd-name { font-family: var(--bs-font-monospace); font-weight: 600; color: var(--bs-primary); }
-.commands-list .cmd-desc { font-size: 0.75rem; color: var(--bs-secondary-color); }
-.commands-list .cmd-usage { font-size: 0.72rem; color: var(--bs-secondary-color); font-family: var(--bs-font-monospace); }
+.commands-list li:hover { background: var(--surface-soft); }
+.commands-list .cmd-name { font-family: var(--font-mono); font-weight: 600; color: var(--accent); }
+.commands-list .cmd-desc { font-size: 0.75rem; color: var(--muted); }
+.commands-list .cmd-usage { font-size: 0.72rem; color: var(--muted); font-family: var(--font-mono); }
 
-.settings-form { display: flex; flex-direction: column; gap: 10px; }
-.settings-form .form-check { padding-left: 2.6em; }
-.settings-form .form-check-label small { display: block; color: var(--bs-secondary-color); font-size: 0.72rem; }
-.settings-form label.form-label { font-size: 0.76rem; margin-bottom: 2px; color: var(--bs-secondary-color); }
+/* Mobile groups run-options into a bordered card on --surface; this is the desktop
+   equivalent for the settings tab, which was a flat run of controls. */
+.settings-form {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--surface);
+}
+/* No left indent: that 2.6em was Bootstrap clearing an absolutely-positioned check
+   input, and it left the switches hanging off the labels above them. */
+.settings-form .form-check { padding-left: 0; }
+.settings-form .form-check-label small { display: block; color: var(--muted); font-size: 0.72rem; }
+.settings-form label.form-label { font-size: 0.76rem; margin-bottom: 2px; color: var(--muted); }
+/* Mobile's field captions: small, spaced, uppercase. */
+.settings-form > div > label:not(.form-check-label) {
+  display: block;
+  margin: 4px 2px 3px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 
 .plan-display.empty, .writes-list.empty { padding: 6px 0; }
 .plan-step {
@@ -426,36 +655,36 @@ body { font-feature-settings: "ss01"; }
   display: flex; gap: 8px; align-items: flex-start;
   font-size: 0.82rem;
 }
-.plan-step.done       { border-left-color: var(--bs-success); }
-.plan-step.in_progress{ border-left-color: var(--bs-primary); background: var(--bs-tertiary-bg); }
-.plan-step.blocked    { border-left-color: var(--bs-danger); }
-.plan-step .step-mark { font-family: var(--bs-font-monospace); width: 1.4em; flex-shrink: 0; color: var(--bs-secondary-color); }
-.plan-step.done .step-mark       { color: var(--bs-success); }
-.plan-step.in_progress .step-mark{ color: var(--bs-primary); }
-.plan-step.blocked .step-mark    { color: var(--bs-danger); }
-.plan-step .step-note { display: block; color: var(--bs-secondary-color); font-size: 0.72rem; margin-top: 2px; }
+.plan-step.done       { border-left-color: var(--success); }
+.plan-step.in_progress{ border-left-color: var(--accent); background: var(--surface-soft); }
+.plan-step.blocked    { border-left-color: var(--danger); }
+.plan-step .step-mark { font-family: var(--font-mono); width: 1.4em; flex-shrink: 0; color: var(--muted); }
+.plan-step.done .step-mark       { color: var(--success); }
+.plan-step.in_progress .step-mark{ color: var(--accent); }
+.plan-step.blocked .step-mark    { color: var(--danger); }
+.plan-step .step-note { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 2px; }
 
 .writes-list .write-card {
-  border: 1px solid var(--bs-border-color); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 11px;
   margin-bottom: 8px; overflow: hidden;
 }
 .writes-list .write-head {
   display: flex; gap: 8px; align-items: center;
-  padding: 6px 10px; background: var(--bs-tertiary-bg);
+  padding: 6px 10px; background: var(--surface-soft);
   cursor: pointer; font-size: 0.82rem;
 }
-.writes-list .write-head .w-path { flex: 1; font-family: var(--bs-font-monospace); font-size: 0.75rem; overflow-wrap: anywhere; }
-.writes-list .write-head .w-size { font-size: 0.7rem; color: var(--bs-secondary-color); }
+.writes-list .write-head .w-path { flex: 1; font-family: var(--font-mono); font-size: 0.75rem; overflow-wrap: anywhere; }
+.writes-list .write-head .w-size { font-size: 0.7rem; color: var(--muted); }
 .writes-list .write-diff {
-  background: var(--bs-body-bg); padding: 8px 10px;
-  font-family: var(--bs-font-monospace); font-size: 0.72rem;
+  background: var(--bg); padding: 8px 10px;
+  font-family: var(--font-mono); font-size: 0.72rem;
   white-space: pre; overflow-x: auto;
 }
-.writes-list .write-diff .d-add { color: var(--bs-success); }
-.writes-list .write-diff .d-del { color: var(--bs-danger); }
+.writes-list .write-diff .d-add { color: var(--success); }
+.writes-list .write-diff .d-del { color: var(--danger); }
 .writes-list .write-actions {
   display: flex; gap: 6px; padding: 6px 10px;
-  border-top: 1px solid var(--bs-border-color);
+  border-top: 1px solid var(--line);
 }
 
 /* ─────────────────────────── folder picker ─────────────────────────── */
@@ -463,10 +692,10 @@ body { font-feature-settings: "ss01"; }
 /* Closed <dialog> defaults to display:none from the UA stylesheet. Style the OPEN state only
    so the modal is invisible until showModal() is called. */
 .folder-dialog[open] {
-  border: 1px solid var(--bs-border-color);
-  border-radius: 8px;
-  background: var(--bs-body-bg);
-  color: var(--bs-body-color);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
   padding: 16px 18px;
   width: 520px; max-width: 90vw;
   max-height: 80vh;
@@ -477,36 +706,36 @@ body { font-feature-settings: "ss01"; }
 .folder-dialog-head h3 { margin: 0 0 4px; font-size: 1rem; }
 .folder-dialog-head p { margin: 0 0 10px; }
 .folder-dialog-path {
-  padding: 6px 8px; background: var(--bs-tertiary-bg);
-  border-radius: 4px;
-  font-family: var(--bs-font-monospace); font-size: 0.82rem;
+  padding: 6px 8px; background: var(--surface-soft);
+  border-radius: 8px;
+  font-family: var(--font-mono); font-size: 0.82rem;
   word-break: break-all;
   margin-bottom: 8px;
 }
 .folder-entries {
   flex: 1; min-height: 200px;
   overflow-y: auto;
-  border: 1px solid var(--bs-border-color); border-radius: 6px;
+  border: 1px solid var(--line); border-radius: 12px;
   list-style: none; padding: 4px 0; margin: 0;
 }
 .folder-entries li {
   padding: 6px 12px; cursor: pointer;
-  font-family: var(--bs-font-monospace); font-size: 0.85rem;
+  font-family: var(--font-mono); font-size: 0.85rem;
   display: flex; gap: 8px; align-items: center;
 }
-.folder-entries li:hover { background: var(--bs-tertiary-bg); }
-.folder-entries li.parent { color: var(--bs-secondary-color); }
+.folder-entries li:hover { background: var(--surface-soft); }
+.folder-entries li.parent { color: var(--muted); }
 .folder-entries li .ico { width: 1.2em; text-align: center; flex-shrink: 0; }
-.folder-entries .empty { padding: 12px; color: var(--bs-secondary-color); cursor: default; }
+.folder-entries .empty { padding: 12px; color: var(--muted); cursor: default; }
 .folder-dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 
 /* ─────────────────────────── dialog ─────────────────────────── */
 
 .api-key-dialog {
-  border: 1px solid var(--bs-border-color);
-  border-radius: 8px;
-  background: var(--bs-body-bg);
-  color: var(--bs-body-color);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
   padding: 18px 20px;
   max-width: 380px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.3);
@@ -521,10 +750,9 @@ body { font-feature-settings: "ss01"; }
 .d-none { display: none !important; }
 .hidden { display: none !important; }
 
-/* respect Halfmoon dark theme for scroll bar tints */
-@media (prefers-color-scheme: dark) {
-  body { color-scheme: dark; }
-}
+/* Scroll bar and form-control tints follow color-scheme, which tokens.css sets on
+   :root per theme. The old rule here forced `dark` on body whenever the OS was dark,
+   which would have overridden a user's light-theme choice by inheritance. */
 
 /* ─────────────────────────── mobile / narrow viewport ─────────────────────────── */
 
@@ -548,9 +776,16 @@ body { font-feature-settings: "ss01"; }
     --right-pane-width: 88vw;
   }
 
+  /* Notch and home-indicator clearance. Without these the header rides under the
+     status bar and the send button under the home indicator on an iPhone. env()
+     resolves to 0px wherever there is no inset, so this is safe on any device. */
+  .app-shell { grid-template-rows: calc(var(--header-height) + env(safe-area-inset-top)) 1fr; }
+  /* Keep a bounced transcript from dragging the whole page with it. */
+  .transcript { overscroll-behavior-y: contain; }
+
   .mobile-only { display: inline-flex; align-items: center; }
 
-  .app-header { gap: 8px; padding: 0 8px; }
+  .app-header { gap: 8px; padding: env(safe-area-inset-top) 8px 0; }
   .brand { gap: 4px; font-size: 0.9rem; }
   .brand-name { display: none; }   /* keep only the dagger mark */
   .header-status { gap: 6px; min-width: 0; }
@@ -566,32 +801,96 @@ body { font-feature-settings: "ss01"; }
   .app-main { grid-template-columns: 1fr; }
   .app-main.collapsed-right { grid-template-columns: 1fr; }
 
+  /* Bottom sheets rather than side drawers. Same mechanism - still the .open class and
+     the shared backdrop, so app.js is unchanged - only the presentation moves. A sheet
+     rising from the bottom is reachable one-handed on a tall phone in a way the top of
+     a full-height side drawer is not, and it matches the language mobile already uses. */
   .left-pane, .right-pane {
     position: fixed;
-    top: var(--header-height);
-    bottom: 0;
-    z-index: 60;
-    transition: transform 0.18s ease;
-    box-shadow: 0 0 24px rgba(0,0,0,0.35);
-  }
-  .left-pane {
-    left: 0;
-    width: var(--left-pane-width);
-    max-width: 320px;
-    transform: translateX(-100%);
-  }
-  .right-pane {
+    top: auto;
     right: 0;
-    width: var(--right-pane-width);
-    max-width: 360px;
-    transform: translateX(100%);
-    display: flex;                 /* override the desktop-default in-grid display */
+    bottom: 0;
+    left: 0;
+    z-index: 60;
+    width: auto;
+    max-width: none;
+    /* Leaves the transcript visible above, which is what tells you the sheet is a layer
+       over the conversation rather than a page you navigated to. */
+    max-height: min(82dvh, 760px);
+    /* Both panes are already flex columns whose list child scrolls, so capping the
+       height here is all that is needed to make the sheet body scrollable. */
+    display: flex;                 /* also overrides .collapsed-right hiding the pane */
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 20px 20px 0 0;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow);
+    transform: translateY(100%);
+    transition: transform 0.2s ease;
+    overflow: hidden;              /* keeps the list from squaring off the rounded top */
   }
-  .left-pane.open, .right-pane.open { transform: translateX(0); }
+  .left-pane.open, .right-pane.open { transform: translateY(0); }
+
+  /* Grab handle. Decorative, and a flex item so it does not overlap the pane header. */
+  .left-pane::before, .right-pane::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 36px;
+    height: 4px;
+    margin: 8px auto 2px;
+    border-radius: 999px;
+    background: var(--line-strong);
+  }
+
+  /* The pane draws its own top edge now. */
+  .left-pane { border-right: 0; }
+  .right-pane { border-left: 0; }
+
+  /* Home-indicator clearance goes on the scrolling child, not the sheet: padding on
+     the sheet itself would just shrink the scroll area and strand the last row. */
+  .left-pane .job-list,
+  .right-pane .right-tab-content { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+  /* The backdrop stops below the header. It covered it for a while, which made the
+     sheet fully modal but also put the two toggle buttons underneath it, so the control
+     you reach for to dismiss a sheet was the one thing you could not press. The header
+     stays live and undimmed; tapping the backdrop still closes. */
+  .drawer-backdrop { inset: calc(var(--header-height) + env(safe-area-inset-top)) 0 0 0; }
+
+  /* The composer used to run to 320px here - cwd, endpoint+model, toggles and the
+     input row stacked - which is 38% of a 844px phone and left the transcript with
+     480px. Those four collapse behind one summary line that says where the turn will
+     run, and expand on tap. */
+  .composer-meta, .composer-toggles { display: none; }
+  .composer.show-context .composer-meta { display: flex; }
+  .composer.show-context .composer-toggles { display: flex; }
+
+  .composer-context {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 0.72rem;
+    /* The cwd can be long; keep it on one line and clip rather than wrap to two. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    cursor: pointer;
+  }
+  .composer-context::before { content: "▸"; flex: 0 0 auto; font-size: 0.64rem; }
+  .composer-context[aria-expanded="true"]::before { content: "▾"; }
+  .composer-context:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* Composer breathes on narrow viewports: stack cwd / model on their own rows so
      the textarea isn't squeezed below ~150px wide. Hide the small uppercase labels. */
-  .composer { padding: 8px 10px 10px; }
+  .composer { padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
   .composer-meta { flex-wrap: wrap; }
   .composer-cwd, .composer-model {
     flex: 1 1 100%;
@@ -607,8 +906,39 @@ body { font-feature-settings: "ss01"; }
   .pane-header { padding: 8px; }
   .pane-search { padding: 6px 8px; }
 
-  /* Right-pane tabs: smaller pill labels so all six fit a phone row. */
+  /* Right-pane tabs. Eight across two rows is unreadable at 390px, so only the three
+     that matter mid-conversation stay out: Settings, Plan and Writes. The other five
+     are configuration you set up once, and they fold into Advanced. Picking an
+     endpoint does not need its tab - the composer has its own endpoint dropdown. */
+  .right-tabs { grid-template-columns: repeat(3, 1fr); }
+  .right-tabs.show-advanced { grid-template-columns: repeat(4, 1fr); }
+  .right-tabs .nav-item-advanced { display: none; }
+  .right-tabs.show-advanced .nav-item-advanced { display: block; }
   .right-tabs .nav-link { font-size: 0.72rem; padding: 4px 4px; }
+
+  .advanced-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: calc(100% - 16px);
+    margin: 0 8px 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .advanced-toggle::before { content: "▸"; font-size: 0.66rem; }
+  .advanced-toggle[aria-expanded="true"]::before { content: "▾"; }
+  .advanced-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Modifier-key shortcuts mean nothing on a touch keyboard, and the empty state is
+     competing for a short screen. */
+  .keyboard-tip { display: none; }
 
   /* Transcript: less generous padding so messages have room. */
   .transcript { padding: 12px 12px 8px; }
