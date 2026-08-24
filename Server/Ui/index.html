@@ -222,6 +222,8 @@
 </div>
 <!-- Markdown renderer + sanitiser. Loaded before app.js so the module can read the
      globals they install (window.marked, window.DOMPurify). -->
+<div id="toast" class="toast" role="status" hidden></div>
+
 <script src="__BASE__/marked.min.js"></script>
 <script src="__BASE__/purify.min.js"></script>
 <script type="module" src="__BASE__/app.js"></script>
