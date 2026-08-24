@@ -5,6 +5,7 @@ import { $, el } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
 import { createTranscript } from "./core/transcript.js";
 import { createSession } from "./core/session.js";
+import { createToast } from "./core/toast.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -95,12 +96,7 @@ function setStatus(label, status = "idle") {
   els.statusText.textContent = friendly || "Ready";
 }
 
-function showToast(message) {
-  clearTimeout(showToast.timer);
-  els.toast.textContent = message;
-  els.toast.hidden = false;
-  showToast.timer = setTimeout(() => { els.toast.hidden = true; }, 2600);
-}
+const showToast = createToast(els.toast, document.querySelector(".composer-wrap"));
 
 
 function emptyState() {

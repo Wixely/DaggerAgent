@@ -22,6 +22,7 @@ import { $, el, escapeHtml } from "./core/dom.js";
 import { createApi, resolveBasePath, getApiKey, setApiKey } from "./core/api.js";
 import { createTranscript } from "./core/transcript.js";
 import { createSession } from "./core/session.js";
+import { createToast } from "./core/toast.js";
 
 const BASE_PATH = resolveBasePath();
 
@@ -49,6 +50,8 @@ function promptForKey(reason) {
 }
 
 const { api, streamPost } = createApi({ basePath: BASE_PATH, onUnauthorized: promptForKey });
+
+const showToast = createToast(document.getElementById("toast"), document.querySelector(".composer"));
 
 // ───────────────────────────────────────────────────────────
 // 2. global state
@@ -107,6 +110,7 @@ const els = {
   tabs: document.querySelectorAll(".right-tabs .nav-link"),
   rightTabs: $("right-tabs"),
   btnAdvancedTabs: $("btn-advanced-tabs"),
+  toast: $("toast"),
   panes: {
     endpoints: $("tab-endpoints"),
     mcp: $("tab-mcp"),
@@ -488,7 +492,7 @@ function renderEndpointForm(e, isNew = false) {
         body: JSON.stringify(body),
       });
       await loadEndpoints();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
   return form;
 }
@@ -497,7 +501,7 @@ async function activateEndpoint(id) {
   try {
     await api(`/endpoints/${encodeURIComponent(id)}/activate`, { method: "POST" });
     await loadEndpoints();
-  } catch (e) { alert("Activate failed: " + e.message); }
+  } catch (e) { showToast("Activate failed: " + e.message); }
 }
 
 async function deleteEndpoint(id) {
@@ -505,7 +509,7 @@ async function deleteEndpoint(id) {
   try {
     await api(`/endpoints/${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadEndpoints();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 function addEndpointForm() {
@@ -687,7 +691,7 @@ function renderMcpForm(cfg, isNew = false) {
       // After config CRUD we also need to reload connections to pick up the change.
       try { await api("/mcp/reload", { method: "POST" }); } catch { /* best effort */ }
       await loadMcpConfig();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
   return form;
 }
@@ -698,7 +702,7 @@ async function deleteMcpServer(name) {
     await api(`/mcp-config/${encodeURIComponent(name)}`, { method: "DELETE" });
     try { await api("/mcp/reload", { method: "POST" }); } catch { /* best effort */ }
     await loadMcpConfig();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 function addMcpForm() {
@@ -793,7 +797,7 @@ function renderTriggerOptions() {
         body: JSON.stringify(body),
       });
       await loadTriggers();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
 }
 
@@ -963,7 +967,7 @@ function renderTriggerSourceForm(s, isNew = false) {
         body: JSON.stringify(body),
       });
       await loadTriggers();
-    } catch (e) { alert("Save failed: " + e.message); }
+    } catch (e) { showToast("Save failed: " + e.message); }
   });
   return form;
 }
@@ -973,7 +977,7 @@ async function deleteTriggerSource(id) {
   try {
     await api(`/triggers/sources/${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadTriggers();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 function addTriggerSourceForm() {
@@ -1570,7 +1574,7 @@ async function deleteJob(jobId) {
     await api(`/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
     if (state.currentJobId === jobId) newJob();   // clear the transcript + selection if the open job went away
     refreshJobs();
-  } catch (e) { alert("Delete failed: " + e.message); }
+  } catch (e) { showToast("Delete failed: " + e.message); }
 }
 
 async function resumeJob(jobId) {
