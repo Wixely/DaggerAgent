@@ -509,6 +509,9 @@ body { font-feature-settings: "ss01"; }
   border-bottom: 1px solid var(--line);
 }
 .right-tabs .nav-item { min-width: 0; }
+/* The Advanced group only exists in the narrow branch; at desktop width all eight
+   tabs fit and the toggle would just be a control that does nothing. */
+.advanced-toggle { display: none; }
 .right-tabs .nav-link {
   font-size: 0.78rem; padding: 5px 6px; border-radius: 9px;
   color: var(--muted);
@@ -837,8 +840,35 @@ body { font-feature-settings: "ss01"; }
   .pane-header { padding: 8px; }
   .pane-search { padding: 6px 8px; }
 
-  /* Right-pane tabs: smaller pill labels so all six fit a phone row. */
+  /* Right-pane tabs. Eight across two rows is unreadable at 390px, so only the three
+     that matter mid-conversation stay out: Settings, Plan and Writes. The other five
+     are configuration you set up once, and they fold into Advanced. Picking an
+     endpoint does not need its tab - the composer has its own endpoint dropdown. */
+  .right-tabs { grid-template-columns: repeat(3, 1fr); }
+  .right-tabs.show-advanced { grid-template-columns: repeat(4, 1fr); }
+  .right-tabs .nav-item-advanced { display: none; }
+  .right-tabs.show-advanced .nav-item-advanced { display: block; }
   .right-tabs .nav-link { font-size: 0.72rem; padding: 4px 4px; }
+
+  .advanced-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: calc(100% - 16px);
+    margin: 0 8px 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .advanced-toggle::before { content: "▸"; font-size: 0.66rem; }
+  .advanced-toggle[aria-expanded="true"]::before { content: "▾"; }
+  .advanced-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* Transcript: less generous padding so messages have room. */
   .transcript { padding: 12px 12px 8px; }
