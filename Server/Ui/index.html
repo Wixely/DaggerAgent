@@ -3,28 +3,16 @@
 <head>
 <meta charset="utf-8">
 <!-- viewport-fit=cover is what makes env(safe-area-inset-*) resolve to anything but
-     zero. Without it the notch clearance in app.css would be dead code on a phone,
-     and this shell is reachable on one through ?desktop=1. mobile.html already sets it. -->
+     zero. Without it the notch clearance in app.css would be dead code, and this is
+     the shell phones get. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0e10">
 <title>Dagger Agent</title>
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="__BASE__/tokens.css">
 <link rel="stylesheet" href="__BASE__/primitives.css">
 <link rel="stylesheet" href="__BASE__/controls.css">
 <link rel="stylesheet" href="__BASE__/app.css">
-<script>
-// Server-side user-agent routing handles normal phones. This catches iPadOS and
-// other touch-first browsers that deliberately present a desktop user agent.
-(() => {
-  const params = new URLSearchParams(location.search);
-  const compactTouch = navigator.maxTouchPoints > 1
-    && matchMedia("(pointer: coarse)").matches
-    && Math.min(screen.width, screen.height) <= 1024;
-  if (!params.has("desktop") && (navigator.userAgentData?.mobile || compactTouch)) {
-    location.replace(location.pathname.replace(/\/ui\/?$/, "/mobile") + location.search);
-  }
-})();
-</script>
 </head>
 <body>
 <div class="app-shell">
@@ -66,9 +54,9 @@
         <div class="empty-state">
           <div class="empty-mark" aria-hidden="true">&#8224;</div>
           <h3 class="mb-2">Ready when you are.</h3>
-          <p class="text-muted">Submit a prompt below to start a new job, or pick one from the left.</p>
+          <p class="text-muted">Submit a prompt below to start a new job, or reopen an earlier one.</p>
           <ul class="text-muted small empty-tips">
-            <li><kbd>Enter</kbd> sends · <kbd>Shift+Enter</kbd> newline · <kbd>Ctrl+Enter</kbd> queues</li>
+            <li class="keyboard-tip"><kbd>Enter</kbd> sends · <kbd>Shift+Enter</kbd> newline · <kbd>Ctrl+Enter</kbd> queues</li>
             <li>Drag or paste an image into the composer to attach it</li>
             <li>Flip <em>Preview writes</em> to require approval before files change</li>
           </ul>

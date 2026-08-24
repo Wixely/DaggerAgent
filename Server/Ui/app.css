@@ -934,6 +934,10 @@ body { font-feature-settings: "ss01"; }
   .advanced-toggle[aria-expanded="true"]::before { content: "▾"; }
   .advanced-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+  /* Modifier-key shortcuts mean nothing on a touch keyboard, and the empty state is
+     competing for a short screen. */
+  .keyboard-tip { display: none; }
+
   /* Transcript: less generous padding so messages have room. */
   .transcript { padding: 12px 12px 8px; }
   .msg.user { padding: 8px 10px; }
