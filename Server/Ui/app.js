@@ -111,6 +111,8 @@ const els = {
   rightTabs: $("right-tabs"),
   btnAdvancedTabs: $("btn-advanced-tabs"),
   toast: $("toast"),
+  composer: $("composer"),
+  composerContext: $("composer-context"),
   panes: {
     endpoints: $("tab-endpoints"),
     mcp: $("tab-mcp"),
@@ -239,6 +241,7 @@ function switchTab(name) {
   if (name === "plan") loadPlan();
   if (name === "writes") loadPendingWrites();
   revealAdvancedIfNeeded();
+  updateComposerContext();
 }
 
 // The five configuration tabs fold behind Advanced under 780px. Nothing here does
@@ -256,6 +259,36 @@ function revealAdvancedIfNeeded() {
   if (!ADVANCED_TABS.has(activeTabName())) return;
   els.rightTabs.classList.add("show-advanced");
   els.btnAdvancedTabs.setAttribute("aria-expanded", "true");
+}
+
+// The composer summary line, shown only under 780px. It has to say enough that you can
+// send a turn without expanding it: where it will run, which endpoint, and any tool
+// switch that changes what the agent is allowed to do. Read-only and Preview writes are
+// the ones worth surfacing - not knowing they are on is how you lose a turn.
+function updateComposerContext() {
+  const sep = /[\\/]/;   // Windows and POSIX separators both
+  const dir = els.workingDir.value.trim().replace(/[\\/]+$/, "");
+  const leaf = dir.split(sep).filter(Boolean).pop() || dir || "default dir";
+  const sel = els.endpointSelect;
+  // Only name an endpoint when one was actually picked: the placeholder option reads
+  // "(use active default)", which costs a line of a 390px summary to say nothing.
+  const endpoint = sel && sel.value && sel.selectedIndex >= 0
+    ? sel.options[sel.selectedIndex].textContent.trim()
+    : "";
+  const model = els.modelInput.value.trim();
+  const flags = [
+    els.tReadonly.checked && "read-only",
+    els.tPreview.checked && "preview writes",
+    els.tShell.checked && "shell",
+    els.tPlan.checked && "plan",
+  ].filter(Boolean);
+  els.composerContext.textContent =
+    [leaf, model || endpoint, flags.join(", ")].filter(Boolean).join("  \u00b7  ");
+}
+
+function toggleComposerContext() {
+  const open = els.composer.classList.toggle("show-context");
+  els.composerContext.setAttribute("aria-expanded", String(open));
 }
 
 function toggleAdvancedTabs() {
@@ -288,6 +321,7 @@ function populateEndpointDropdown() {
   }
   // Restore previous selection if still valid; otherwise leave default.
   if (current && Array.from(sel.options).some(o => o.value === current)) sel.value = current;
+  updateComposerContext();   // the endpoint list arriving moves these without an event
 }
 
 function renderEndpoints() {
@@ -1054,6 +1088,7 @@ function syncSettingsToToggles() {
   els.tPreview.checked = state.settings.writePreview;
   els.tShell.checked = state.settings.allowShell;
   els.tReadonly.checked = state.settings.readOnly;
+  updateComposerContext();   // settings arriving moves these without an event
 }
 
 async function patchSettings(patch) {
@@ -1599,6 +1634,7 @@ async function selectJob(jobId) {
   try {
     await loadJob(jobId);
   } catch (e) { console.warn("job load failed", e); clearTranscript(); }
+  updateComposerContext();   // loadJob restores cwd + endpoint without firing events
   renderJobsList();
   if (els.panes.plan.classList.contains("active")) loadPlan();
 }
@@ -1637,6 +1673,12 @@ function wireEvents() {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   }
   els.btnAdvancedTabs.addEventListener("click", toggleAdvancedTabs);
+  els.composerContext.addEventListener("click", toggleComposerContext);
+  // Keep the summary honest: it is the only view of these while collapsed.
+  for (const n of [els.workingDir, els.modelInput]) n.addEventListener("input", updateComposerContext);
+  for (const n of [els.endpointSelect, els.tPlan, els.tPreview, els.tShell, els.tReadonly]) {
+    n.addEventListener("change", updateComposerContext);
+  }
   // Arrow keys move between tabs, as a tablist is expected to. The strip is a 4x2 grid,
   // so Up/Down step a whole row; Left/Right step one and wrap.
   const tabs = Array.from(els.tabs);

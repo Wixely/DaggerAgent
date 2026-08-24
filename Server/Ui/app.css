@@ -512,6 +512,9 @@ body { font-feature-settings: "ss01"; }
 /* The Advanced group only exists in the narrow branch; at desktop width all eight
    tabs fit and the toggle would just be a control that does nothing. */
 .advanced-toggle { display: none; }
+/* Same story: desktop has the room to show cwd, endpoint, model and the toggles
+   outright, so the summary line only exists in the narrow branch. */
+.composer-context { display: none; }
 .right-tabs .nav-link {
   font-size: 0.78rem; padding: 5px 6px; border-radius: 9px;
   color: var(--muted);
@@ -851,6 +854,37 @@ body { font-feature-settings: "ss01"; }
   /* A sheet is modal, so the backdrop covers the header too - tapping anywhere off the
      sheet closes it, rather than leaving a live strip along the top. */
   .drawer-backdrop { inset: 0; }
+
+  /* The composer used to run to 320px here - cwd, endpoint+model, toggles and the
+     input row stacked - which is 38% of a 844px phone and left the transcript with
+     480px. Those four collapse behind one summary line that says where the turn will
+     run, and expand on tap. */
+  .composer-meta, .composer-toggles { display: none; }
+  .composer.show-context .composer-meta { display: flex; }
+  .composer.show-context .composer-toggles { display: flex; }
+
+  .composer-context {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 0.72rem;
+    /* The cwd can be long; keep it on one line and clip rather than wrap to two. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    cursor: pointer;
+  }
+  .composer-context::before { content: "▸"; flex: 0 0 auto; font-size: 0.64rem; }
+  .composer-context[aria-expanded="true"]::before { content: "▾"; }
+  .composer-context:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* Composer breathes on narrow viewports: stack cwd / model on their own rows so
      the textarea isn't squeezed below ~150px wide. Hide the small uppercase labels. */
