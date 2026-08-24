@@ -105,6 +105,8 @@ const els = {
   btnSend: $("btn-send"),
   btnCancel: $("btn-cancel"),
   tabs: document.querySelectorAll(".right-tabs .nav-link"),
+  rightTabs: $("right-tabs"),
+  btnAdvancedTabs: $("btn-advanced-tabs"),
   panes: {
     endpoints: $("tab-endpoints"),
     mcp: $("tab-mcp"),
@@ -232,6 +234,32 @@ function switchTab(name) {
   if (name === "triggers") loadTriggers();
   if (name === "plan") loadPlan();
   if (name === "writes") loadPendingWrites();
+  revealAdvancedIfNeeded();
+}
+
+// The five configuration tabs fold behind Advanced under 780px. Nothing here does
+// anything at desktop width: the class is inert and the toggle is display:none.
+const ADVANCED_TABS = new Set(["endpoints", "mcp", "triggers", "tools", "commands"]);
+
+function activeTabName() {
+  const btn = Array.from(els.tabs).find((b) => b.classList.contains("active"));
+  return btn ? btn.dataset.tab : null;
+}
+
+// Whatever is in view has to be reachable. If the active tab lives in the folded group,
+// open the group rather than leave the one tab you are looking at hidden.
+function revealAdvancedIfNeeded() {
+  if (!ADVANCED_TABS.has(activeTabName())) return;
+  els.rightTabs.classList.add("show-advanced");
+  els.btnAdvancedTabs.setAttribute("aria-expanded", "true");
+}
+
+function toggleAdvancedTabs() {
+  const open = els.rightTabs.classList.toggle("show-advanced");
+  els.btnAdvancedTabs.setAttribute("aria-expanded", String(open));
+  // Closing the group while one of its tabs is showing would hide the active tab, so
+  // fall back to Settings, which is the one that stays out at every width.
+  if (!open && ADVANCED_TABS.has(activeTabName())) switchTab("settings");
 }
 
 // ───────────────────────────── endpoints (LLM CRUD) ─────────────────────────────
@@ -1604,6 +1632,7 @@ function wireEvents() {
   for (const btn of els.tabs) {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   }
+  els.btnAdvancedTabs.addEventListener("click", toggleAdvancedTabs);
   // Arrow keys move between tabs, as a tablist is expected to. The strip is a 4x2 grid,
   // so Up/Down step a whole row; Left/Right step one and wrap.
   const tabs = Array.from(els.tabs);
@@ -1769,6 +1798,9 @@ function wireEvents() {
 async function boot() {
   wireEvents();
   flashStatus("idle");
+  // The tab marked active in the HTML is Endpoints, which lives in the folded group, so
+  // a phone-width first load would otherwise open on a tab it cannot show.
+  revealAdvancedIfNeeded();
   await Promise.allSettled([
     refreshJobs(),
     loadEndpoints(),
