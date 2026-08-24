@@ -188,12 +188,24 @@ jobs:
         shell: bash
         run: find release-assets -maxdepth 2 -type f | sort
 
+      # Prefer the tag's own annotation as the release body. --generate-notes lists
+      # merged PR titles, which say how the work arrived rather than what shipped:
+      # v1.6.0 went out headed by a PR title written before most of its contents
+      # existed. Falls back to generated notes for a lightweight tag, which carries
+      # no message to read.
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
-          gh release create "${GITHUB_REF_NAME}" --generate-notes
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists."
+          elif gh release create "${GITHUB_REF_NAME}" --notes-from-tag; then
+            echo "Created ${GITHUB_REF_NAME} from the tag annotation."
+          else
+            echo "No usable tag annotation; falling back to generated notes."
+            gh release create "${GITHUB_REF_NAME}" --generate-notes
+          fi
 
       - name: Upload release assets
         env:
