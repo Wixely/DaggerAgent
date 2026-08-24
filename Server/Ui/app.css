@@ -851,9 +851,11 @@ body { font-feature-settings: "ss01"; }
   .left-pane .job-list,
   .right-pane .right-tab-content { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 
-  /* A sheet is modal, so the backdrop covers the header too - tapping anywhere off the
-     sheet closes it, rather than leaving a live strip along the top. */
-  .drawer-backdrop { inset: 0; }
+  /* The backdrop stops below the header. It covered it for a while, which made the
+     sheet fully modal but also put the two toggle buttons underneath it, so the control
+     you reach for to dismiss a sheet was the one thing you could not press. The header
+     stays live and undimmed; tapping the backdrop still closes. */
+  .drawer-backdrop { inset: calc(var(--header-height) + env(safe-area-inset-top)) 0 0 0; }
 
   /* The composer used to run to 320px here - cwd, endpoint+model, toggles and the
      input row stacked - which is 38% of a 844px phone and left the transcript with
