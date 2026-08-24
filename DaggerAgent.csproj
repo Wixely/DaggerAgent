@@ -44,7 +44,14 @@
          GITHUB_PACKAGES_TOKEN to restore. -->
     <PackageReference Include="AgentClientProtocol" Version="0.2.0" />
     <PackageReference Include="DiffPlex" Version="1.9.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />
+    <!-- Direct pin, not used directly: Microsoft.ML.Tokenizers.Data.O200kBase 2.0.0 hard-pins
+         Microsoft.Bcl.Memory 9.0.4, which carries GHSA-73j8-2gch-69rq (.NET DoS, affects
+         >=9.0.0 <=9.0.13). The parent has not moved, so override the transitive here.
+         Drop this once O200kBase ships a reference to 9.0.14+ / 10.0.4+. -->
+    <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.11" />
+    <!-- 10.0.11 pulls SQLitePCLRaw.bundle_e_sqlite3 2.1.12, clearing GHSA-2m69-gcr7-jv3q
+         (vulnerable SQLite in SQLitePCLRaw.lib.e_sqlite3 <= 2.1.11). -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.6.0" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
