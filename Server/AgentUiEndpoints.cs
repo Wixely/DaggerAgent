@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Daggeragent.Configuration;
 using Daggeragent.Mcp;
 using Daggeragent.Persistence;
@@ -28,27 +29,22 @@ public static class AgentUiEndpoints
 
         // ──────────────────────────── static assets ────────────────────────────
 
-        // Desktop and mobile shells share the embedded asset path. The HTML uses absolute
-        // hrefs ("__BASE__/app.css") that are rewritten at serve time, so a configurable
+        // One shell for every viewport now. The HTML uses absolute hrefs
+        // ("__BASE__/app.css") that are rewritten at serve time, so a configurable
         // basePath still works.
+        //
+        // No user-agent sniffing and so no Vary on it either, which means /agent/ui is
+        // a plain cacheable response again rather than one that varies per device.
         var uiPrefix = $"{basePath}/ui";
-        var mobilePath = $"{basePath}/mobile";
-        group.MapGet("/ui", (HttpContext context) =>
-        {
-            context.Response.Headers["Vary"] = "User-Agent, Sec-CH-UA-Mobile";
-            return ShouldUseMobileUi(context.Request)
-                ? Results.Redirect(mobilePath)
-                : ServeIndexHtml("index.html", uiPrefix);
-        });
-        group.MapGet("/ui/{**path}", (HttpContext context, string? path) =>
-        {
-            if (!string.IsNullOrEmpty(path)) return ServeAsset(path);
-            context.Response.Headers["Vary"] = "User-Agent, Sec-CH-UA-Mobile";
-            return ShouldUseMobileUi(context.Request)
-                ? Results.Redirect(mobilePath)
-                : ServeIndexHtml("index.html", uiPrefix);
-        });
-        group.MapGet("/mobile", () => ServeIndexHtml("mobile.html", uiPrefix));
+        group.MapGet("/ui", () => ServeIndexHtml("index.html", uiPrefix));
+        group.MapGet("/ui/{**path}", (string? path) =>
+            string.IsNullOrEmpty(path) ? ServeIndexHtml("index.html", uiPrefix) : ServeAsset(path));
+
+        // The separate mobile shell is gone, but this path outlived it: phones were
+        // redirected here for months, so it is in bookmarks and home-screen shortcuts.
+        // Kept as a redirect rather than removed. 302 and not 301 deliberately - a
+        // permanent redirect would be cached by the browser and hard to take back.
+        group.MapGet("/mobile", () => Results.Redirect(uiPrefix));
 
         // ──────────────────────────── endpoints (LLM) ────────────────────────────
 
@@ -682,29 +678,6 @@ public static class AgentUiEndpoints
         var html = System.Text.Encoding.UTF8.GetString(bytes).Replace("__BASE__", uiPrefix);
         return Results.Content(html, "text/html; charset=utf-8");
     }
-
-    private static bool ShouldUseMobileUi(HttpRequest request)
-    {
-        // Keep an explicit escape hatch so a phone can still reach the full configuration UI.
-        if (request.Query.TryGetValue("desktop", out var desktop) &&
-            (desktop.ToString() == "1" || desktop.ToString().Equals("true", StringComparison.OrdinalIgnoreCase)))
-            return false;
-
-        if (request.Headers.TryGetValue("Sec-CH-UA-Mobile", out var mobileHint) &&
-            mobileHint.ToString() == "?1")
-            return true;
-
-        var userAgent = request.Headers["User-Agent"].ToString();
-        if (string.IsNullOrWhiteSpace(userAgent)) return false;
-
-        return userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("iPod", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("IEMobile", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("Mobile", StringComparison.OrdinalIgnoreCase)
-            || userAgent.Contains("Opera Mini", StringComparison.OrdinalIgnoreCase);
-    }
 }
 
 internal sealed record ConfirmPathBody(string Path);
@@ -769,13 +742,34 @@ internal sealed record McpServerPatch(
 
 internal static class JsonOpts
 {
-    public static readonly JsonSerializerOptions Default = new()
+    /// <summary>
+    /// Shared serializer options for the UI endpoints. Frozen at construction, and that
+    /// matters: seventeen endpoints hand this same instance to <c>Results.Json</c>, whose
+    /// <c>JsonHttpResult</c> constructor mutates any options it is given that are not yet
+    /// read-only — it assigns a <c>TypeInfoResolver</c> and then calls
+    /// <c>MakeReadOnly()</c>. On a cold server two concurrent requests can both pass that
+    /// read-only check; whichever freezes the instance first leaves the other assigning a
+    /// resolver to a frozen instance, which throws and turns that request into a 500.
+    /// Supplying the resolver here and freezing up front means the check is already true
+    /// on the very first request, so the mutation never runs.
+    /// </summary>
+    public static readonly JsonSerializerOptions Default = CreateFrozen();
+
+    private static JsonSerializerOptions CreateFrozen()
     {
-        // camelCase matches the rest of the API surface (ASP.NET's default Results.Json output)
-        // and lets the JS UI use natural property names like `cmd.command`, `s.workingDirectory`.
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false,
-    };
+        var options = new JsonSerializerOptions
+        {
+            // camelCase matches the rest of the API surface (ASP.NET's default Results.Json output)
+            // and lets the JS UI use natural property names like `cmd.command`, `s.workingDirectory`.
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = false,
+            // The same resolver JsonHttpResult would have installed, just installed before
+            // anything can race to do it.
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+        };
+        options.MakeReadOnly();
+        return options;
+    }
 }

@@ -1,0 +1,74 @@
+/* Base rules that sit under the whole UI: box sizing, scrollbars, the bare
+   input/select look and the toast.
+   Originally extracted from mobile.css when there were two shells. The mobile-only
+   pieces it also carried - .icon-button, .eyebrow, .primary-button, .switch-row and the
+   .modal-* dialog chrome - went with mobile.html; the desktop shell has always had its
+   own .api-key-dialog and .folder-dialog. Layout still belongs in app.css, not here. */
+
+* { box-sizing: border-box; }
+
+/* ─────────────────────────────── scrollbars ───────────────────────────────
+   Every scrollable region in both shells, in one place. Declared on * rather than
+   :root deliberately: scrollbar-color inherits its COMPUTED value, so a root
+   declaration would resolve var(--scrollbar-thumb) once and freeze it. Per-element,
+   it re-resolves, which lets the near-black code slabs below re-point the token and
+   actually get a visible thumb in the light theme.
+
+   Chrome 121+, Firefox and Safari 18.2+ take the standard properties and ignore the
+   ::-webkit- pseudo-elements; older WebKit ignores the standard properties and takes
+   the pseudo-elements. Both paths are kept in sync by the same tokens. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background-color: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb {
+  /* The transparent border plus content-box clip is what insets the thumb from the
+     gutter edge — there is no padding on a scrollbar pseudo-element to do it with. */
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: var(--scrollbar-thumb);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
+::-webkit-scrollbar-corner { background-color: var(--scrollbar-track); }
+
+button, input, select, textarea { font: inherit; }
+
+button { color: inherit; }
+
+input, select {
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+input:focus, select:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.toast {
+  position: fixed;
+  z-index: 100;
+  left: 50%;
+  bottom: calc(var(--toast-offset, 112px) + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: min(calc(100% - 28px), 460px);
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
