@@ -1729,8 +1729,14 @@ function wireEvents() {
   }
   els.btnRightToggle.addEventListener("click", () => {
     if (isMobile()) {
-      els.leftPane.classList.remove("open");
-      els.rightPane.classList.toggle("open");
+      // One button dismisses whichever sheet is up. It used to swap the jobs sheet for
+      // this one, which left the jobs sheet with no obvious way to close: the button you
+      // reach for is the menu button, and it opened something else instead.
+      if (els.leftPane.classList.contains("open") || els.rightPane.classList.contains("open")) {
+        closeDrawers();
+        return;
+      }
+      els.rightPane.classList.add("open");
       syncBackdrop();
     } else {
       els.appMain.classList.toggle("collapsed-right");
