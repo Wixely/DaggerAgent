@@ -2,7 +2,10 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover is what makes env(safe-area-inset-*) resolve to anything but
+     zero. Without it the notch clearance in app.css would be dead code on a phone,
+     and this shell is reachable on one through ?desktop=1. mobile.html already sets it. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dagger Agent</title>
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="__BASE__/tokens.css">

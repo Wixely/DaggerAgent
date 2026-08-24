@@ -18,13 +18,23 @@ html, body {
   height: 100%; margin: 0; overflow: hidden;
   background: var(--bg);
   color: var(--text);
+  /* Touch behaviour, carried over from mobile.css. Inert with a mouse, and this shell
+     is reachable on a phone through ?desktop=1, which exists precisely so the full
+     configuration UI stays available there. */
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
 }
+button, a { -webkit-touch-callout: none; }
 body { font-feature-settings: "ss01"; }
 
 .app-shell {
   display: grid;
   grid-template-rows: var(--header-height) 1fr;
   height: 100vh;
+  /* dvh tracks a mobile URL bar collapsing and expanding; vh does not, so on a phone
+     the composer would sit under the bar until you scrolled. Ordered so anything
+     without dvh support keeps the vh value. Mobile has always used dvh. */
+  height: 100dvh;
 }
 
 /* Translucent over the scrolling content, as mobile's topbar is. */
@@ -760,9 +770,17 @@ body { font-feature-settings: "ss01"; }
     --right-pane-width: 88vw;
   }
 
+  /* Notch and home-indicator clearance. Without these the header rides under the
+     status bar and the send button under the home indicator on an iPhone. env()
+     resolves to 0px wherever there is no inset, so this is safe on any device. */
+  .app-shell { grid-template-rows: calc(var(--header-height) + env(safe-area-inset-top)) 1fr; }
+  .left-pane, .right-pane { padding-bottom: env(safe-area-inset-bottom); }
+  /* Keep a bounced transcript from dragging the whole page with it. */
+  .transcript { overscroll-behavior-y: contain; }
+
   .mobile-only { display: inline-flex; align-items: center; }
 
-  .app-header { gap: 8px; padding: 0 8px; }
+  .app-header { gap: 8px; padding: env(safe-area-inset-top) 8px 0; }
   .brand { gap: 4px; font-size: 0.9rem; }
   .brand-name { display: none; }   /* keep only the dagger mark */
   .header-status { gap: 6px; min-width: 0; }
@@ -803,7 +821,7 @@ body { font-feature-settings: "ss01"; }
 
   /* Composer breathes on narrow viewports: stack cwd / model on their own rows so
      the textarea isn't squeezed below ~150px wide. Hide the small uppercase labels. */
-  .composer { padding: 8px 10px 10px; }
+  .composer { padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
   .composer-meta { flex-wrap: wrap; }
   .composer-cwd, .composer-model {
     flex: 1 1 100%;
