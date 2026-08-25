@@ -14,6 +14,7 @@ public sealed class LlmAgent
     private readonly ChatClientFactory _chatClientFactory;
     private readonly BuiltInToolRegistry _builtIns;
     private readonly McpToolProvider _mcpTools;
+    private readonly Tools.IToolCallSink _toolCallSink;
     private readonly IJobStore _jobStore;
     private readonly ContextCompressor _compressor;
     private readonly TokenEstimator _tokenEstimator;
@@ -40,11 +41,13 @@ public sealed class LlmAgent
         IOptions<PricingOptions> pricingOptions,
         HostLaunchInfo launchInfo,
         ToolResultStore toolResultStore,
+        Tools.IToolCallSink toolCallSink,
         ILogger<LlmAgent> log)
     {
         _chatClientFactory = chatClientFactory;
         _builtIns = builtIns;
         _mcpTools = mcpTools;
+        _toolCallSink = toolCallSink;
         _jobStore = jobStore;
         _compressor = compressor;
         _tokenEstimator = tokenEstimator;
@@ -100,7 +103,7 @@ public sealed class LlmAgent
     /// <c>read_tool_result</c> / <c>head_tool_result</c> / ... consumer tools so reading
     /// a 16K slice doesn't recursively offload its own response.
     /// </summary>
-    private List<AITool> WrapTools(IEnumerable<AITool> raw, string jobId, Tools.TurnToolCache cache)
+    private List<AITool> WrapTools(IEnumerable<AITool> raw, string jobId, int depth, Tools.TurnToolCache cache)
     {
         var threshold = _toolsOptions.MaxToolResultChars;
         var wrapped = new List<AITool>();
@@ -110,6 +113,9 @@ public sealed class LlmAgent
             AIFunction outer = new Tools.CachingAIFunction(f, cache);
             if (threshold > 0 && !Tools.ToolResultTools.ConsumerToolNames.Contains(f.Name))
                 outer = new Tools.OffloadingAIFunction(outer, _toolResultStore, jobId, threshold);
+            // Outermost, so the reported duration is the whole call the model sees and every
+            // tool invocation on both turn paths is observable from one place.
+            outer = new Tools.NotifyingAIFunction(outer, _toolCallSink, jobId, depth);
             wrapped.Add(outer);
         }
         return wrapped;
@@ -181,7 +187,7 @@ public sealed class LlmAgent
         rawTools = RouteTools(rawTools, userMessage, state);
 
         var cache = new Tools.TurnToolCache();
-        var tools = WrapTools(rawTools, state.Id, cache);
+        var tools = WrapTools(rawTools, state.Id, state.Depth, cache);
 
         var turnBudget = ResolveTurnBudget(state);
         var options = new ChatOptions
@@ -320,7 +326,7 @@ public sealed class LlmAgent
         rawTools = RouteTools(rawTools, userMessage, state);
 
         var cache = new Tools.TurnToolCache();
-        var tools = WrapTools(rawTools, state.Id, cache);
+        var tools = WrapTools(rawTools, state.Id, state.Depth, cache);
 
         var options = new ChatOptions
         {

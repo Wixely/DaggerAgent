@@ -295,6 +295,11 @@ public static class Program
         builder.Services.AddSingleton<PlanningTools>();
         builder.Services.AddSingleton<ToolResultStore>();
         builder.Services.AddSingleton<ToolResultTools>();
+        // Concrete type is registered too so a host can resolve it and subscribe to its
+        // events; LlmAgent only ever sees the interface. Singleton because sub-agents run
+        // on their own transient LlmAgent in a child scope and must publish to the same sink.
+        builder.Services.AddSingleton<ToolCallSink>();
+        builder.Services.AddSingleton<IToolCallSink>(sp => sp.GetRequiredService<ToolCallSink>());
         builder.Services.AddSingleton<CliSessionStore>();
         builder.Services.AddSingleton<CliDelegationTools>();
         builder.Services.AddSingleton<RuntimeConfigStore>();
