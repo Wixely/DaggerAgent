@@ -2,6 +2,8 @@
 
 A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs in three modes — interactive REPL, one-shot CLI, and HTTP service — and is deployable as a Windows Service or a Docker container.
 
+![The DaggerAgent web UI: a job transcript with inline tool calls, the composer, and the tool catalogue.](docs/web-ui.png)
+
 > Status: scaffolded. Wiring is in place for MCP clients, resumable jobs (SQLite), context compression, and sub-agents. Real-world testing and feature polish in progress.
 
 ## Features
