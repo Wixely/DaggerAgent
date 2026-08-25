@@ -43,7 +43,9 @@ public sealed class OffloadingAIFunction : AIFunction
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
         var result = await _inner.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
-        var text = result as string;
+        // Not "result as string": AIFunctionFactory returns a JsonElement, so that test was
+        // always null and this method returned early every single time.
+        var text = ToolResultText.AsText(result);
         if (text is null || text.Length <= _threshold) return result;
 
         var entry = _store.Save(_jobId, _inner.Name, text);
