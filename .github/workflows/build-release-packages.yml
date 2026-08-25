@@ -175,16 +175,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # fetch-tags / fetch-depth matter here. The default shallow checkout creates a ref
-      # pointing at the tagged commit but never fetches the annotated tag OBJECT, and
-      # gh --notes-from-tag reads the tag message out of the local repo. Without these,
-      # git falls back to the commit message and gh still exits 0 — which is exactly how
-      # v1.7.0 shipped with its last commit message as the release body.
+      # Deliberately a plain checkout. Tweaking fetch-depth/fetch-tags to expose the tag
+      # annotation does not work — see the release step below for why — so the notes are
+      # read over the API instead and this job needs nothing from git.
       - name: Check out code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Download packaged artifacts
         uses: actions/download-artifact@v4
@@ -210,16 +205,24 @@ jobs:
             echo "Release ${GITHUB_REF_NAME} already exists."
             exit 0
           fi
-          # Test for the annotation explicitly rather than branching on the exit code:
-          # --notes-from-tag succeeds either way, silently using the commit message when
-          # there is no annotation, so the old elif/else could never reach the fallback.
-          # "tag" is an annotated tag object; a lightweight tag resolves to "commit".
-          tag_type="$(git cat-file -t "${GITHUB_REF_NAME}" 2>/dev/null || true)"
-          if [ "${tag_type}" = "tag" ]; then
-            echo "Annotated tag ${GITHUB_REF_NAME}: using its message as the release body."
-            gh release create "${GITHUB_REF_NAME}" --notes-from-tag
+
+          # Read the annotation over the API, never from the checkout. actions/checkout
+          # resolves the ref to a commit and force-fetches it over refs/tags/<tag> —
+          # "t [tag update] <sha> -> <tag>" in its log — so the local tag ref points at a
+          # commit and the annotation is unreachable regardless of fetch-depth/fetch-tags.
+          # Both earlier attempts died here: v1.7.0 got its commit message (gh
+          # --notes-from-tag reads local git and exits 0 anyway), v1.7.1 got generated notes.
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}")"
+          obj_type="$(jq -r '.object.type' <<<"${ref_json}")"
+          obj_sha="$(jq -r '.object.sha' <<<"${ref_json}")"
+
+          if [ "${obj_type}" = "tag" ]; then
+            notes="${RUNNER_TEMP}/release-notes.md"
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${obj_sha}" --jq '.message' > "${notes}"
+            echo "Annotated tag ${GITHUB_REF_NAME}: release body from its message ($(wc -c < "${notes}") bytes)."
+            gh release create "${GITHUB_REF_NAME}" --notes-file "${notes}"
           else
-            echo "${GITHUB_REF_NAME} is not annotated (git cat-file -t said '${tag_type:-unknown}'); generating notes."
+            echo "${GITHUB_REF_NAME} is a lightweight tag (object type '${obj_type}'); generating notes."
             gh release create "${GITHUB_REF_NAME}" --generate-notes
           fi
 
