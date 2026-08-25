@@ -122,6 +122,7 @@ public sealed class RuntimeConfigStore
                 if (tp.CodexCliPath is not null) _tools.CodexCliPath = tp.CodexCliPath;
                 if (tp.CopilotCliPath is not null) _tools.CopilotCliPath = tp.CopilotCliPath;
                 if (tp.AllowCliDelegation is bool acd) _tools.AllowCliDelegation = acd;
+                if (tp.CliDelegationTimeoutSeconds is int cdt) _tools.CliDelegationTimeoutSeconds = cdt;
                 if (tp.GranularTools is bool gt) _tools.GranularTools = gt;
                 if (tp.ForcePlan is bool fp) _tools.ForcePlan = fp;
                 if (tp.MaxFileBytes is int mfb) _tools.MaxFileBytes = mfb;
@@ -174,6 +175,7 @@ public sealed class RuntimeConfigStore
                     CodexCliPath = _tools.CodexCliPath,
                     CopilotCliPath = _tools.CopilotCliPath,
                     AllowCliDelegation = _tools.AllowCliDelegation,
+                    CliDelegationTimeoutSeconds = _tools.CliDelegationTimeoutSeconds,
                     GranularTools = _tools.GranularTools,
                     ForcePlan = _tools.ForcePlan,
                     MaxFileBytes = _tools.MaxFileBytes,
@@ -243,6 +245,7 @@ public sealed class RuntimeConfigStore
         public string? CodexCliPath { get; set; }
         public string? CopilotCliPath { get; set; }
         public bool? AllowCliDelegation { get; set; }
+        public int? CliDelegationTimeoutSeconds { get; set; }
         public bool? GranularTools { get; set; }
         public bool? ForcePlan { get; set; }
         public int? MaxFileBytes { get; set; }
