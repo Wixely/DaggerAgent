@@ -175,8 +175,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # fetch-tags / fetch-depth matter here. The default shallow checkout creates a ref
+      # pointing at the tagged commit but never fetches the annotated tag OBJECT, and
+      # gh --notes-from-tag reads the tag message out of the local repo. Without these,
+      # git falls back to the commit message and gh still exits 0 — which is exactly how
+      # v1.7.0 shipped with its last commit message as the release body.
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Download packaged artifacts
         uses: actions/download-artifact@v4
@@ -200,10 +208,18 @@ jobs:
           set -euo pipefail
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             echo "Release ${GITHUB_REF_NAME} already exists."
-          elif gh release create "${GITHUB_REF_NAME}" --notes-from-tag; then
-            echo "Created ${GITHUB_REF_NAME} from the tag annotation."
+            exit 0
+          fi
+          # Test for the annotation explicitly rather than branching on the exit code:
+          # --notes-from-tag succeeds either way, silently using the commit message when
+          # there is no annotation, so the old elif/else could never reach the fallback.
+          # "tag" is an annotated tag object; a lightweight tag resolves to "commit".
+          tag_type="$(git cat-file -t "${GITHUB_REF_NAME}" 2>/dev/null || true)"
+          if [ "${tag_type}" = "tag" ]; then
+            echo "Annotated tag ${GITHUB_REF_NAME}: using its message as the release body."
+            gh release create "${GITHUB_REF_NAME}" --notes-from-tag
           else
-            echo "No usable tag annotation; falling back to generated notes."
+            echo "${GITHUB_REF_NAME} is not annotated (git cat-file -t said '${tag_type:-unknown}'); generating notes."
             gh release create "${GITHUB_REF_NAME}" --generate-notes
           fi
 
