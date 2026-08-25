@@ -437,8 +437,8 @@ public sealed class CliChatClient : IChatClient
                 // useless to debug without knowing what it printed. Use a short bounded wait
                 // because the pipes should already be closing as the kill propagates.
                 wallClock.Stop();
-                var partialStdout = await ReadPartialAsync(stdoutTask, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-                var partialStderr = await ReadPartialAsync(stderrTask, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                var partialStdout = await ProcessOutput.ReadPartialAsync(stdoutTask).ConfigureAwait(false);
+                var partialStderr = await ProcessOutput.ReadPartialAsync(stderrTask).ConfigureAwait(false);
                 _log.LogError(
                     "CLI {Binary} job {JobId} timed out after {TimeoutSec}s (wallMs={WallMs}). partialStdoutChars={StdoutChars} partialStderrChars={StderrChars} partialStderr={Stderr} partialStdout={Stdout}",
                     _binary, _jobId ?? "(none)", _timeout.TotalSeconds, wallClock.ElapsedMilliseconds,
@@ -802,19 +802,4 @@ public sealed class CliChatClient : IChatClient
     private static string Truncate(string s, int max) =>
         string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "…";
 
-    /// <summary>
-    /// Bounded await over an in-flight ReadToEndAsync task — used on the timeout path so we
-    /// can grab whatever Claude managed to write before the kill propagated, without hanging
-    /// forever if a pipe didn't actually close.
-    /// </summary>
-    private static async Task<string> ReadPartialAsync(Task<string> readTask, TimeSpan timeout)
-    {
-        try
-        {
-            var done = await Task.WhenAny(readTask, Task.Delay(timeout)).ConfigureAwait(false);
-            if (done == readTask) return await readTask.ConfigureAwait(false);
-        }
-        catch { /* swallow — caller logs an empty string in that case */ }
-        return "";
-    }
 }
