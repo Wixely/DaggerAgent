@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS job_events (
     payload_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_job_events_job_id ON job_events(job_id, id);
-").ConfigureAwait(false);
+" + Tools.CliSessionStore.Ddl).ConfigureAwait(false);
         _log.LogInformation("SQLite job store initialised at {ConnectionString}", _connectionString);
     }
 
@@ -145,7 +145,10 @@ FROM jobs ORDER BY updated_at DESC LIMIT @Limit", new { Limit = limit }).Configu
     public async Task DeleteAsync(string jobId, CancellationToken cancellationToken = default)
     {
         await using var conn = Open();
-        await conn.ExecuteAsync("DELETE FROM job_events WHERE job_id = @Id; DELETE FROM jobs WHERE id = @Id;", new { Id = jobId }).ConfigureAwait(false);
+        await conn.ExecuteAsync(
+            "DELETE FROM job_events WHERE job_id = @Id;" +
+            "DELETE FROM cli_sessions WHERE job_id = @Id;" +
+            "DELETE FROM jobs WHERE id = @Id;", new { Id = jobId }).ConfigureAwait(false);
     }
 
     public async Task AppendEventAsync(string jobId, string kind, string payloadJson, CancellationToken cancellationToken = default)
