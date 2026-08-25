@@ -313,20 +313,48 @@ public sealed class CliDelegationTools
             try { proc.StandardInput.Close(); }
             catch (Exception ex) { _log.LogDebug(ex, "Closing stdin for {Binary} failed (likely already closed)", binary); }
 
+            // Bound the run. Until now a delegation was limited only by the parent agent's
+            // token, so a wedged CLI could hang the turn indefinitely.
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var timeout = TimeSpan.FromSeconds(_toolsOptions.CliDelegationTimeoutSeconds);
+            timeoutCts.CancelAfter(timeout);
+
             // If the parent agent is cancelled mid-call, kill the CLI so it doesn't outlive us.
-            await using var killReg = cancellationToken.Register(() =>
+            await using var killReg = timeoutCts.Token.Register(() =>
             {
                 try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); }
                 catch { /* race with natural exit — ignore */ }
             });
 
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderrTask = proc.StandardError.ReadToEndAsync(cancellationToken);
+            // No cancellation token on the reads: the kill above closes the pipes, ending these
+            // naturally with whatever the CLI wrote. See ProcessOutput for why passing the token
+            // instead throws that output away.
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
 
-            try { await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false); }
+            try { await proc.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException)
             {
-                return $"Error: '{binary}' delegation cancelled.";
+                wallClock.Stop();
+                var partialOut = (await ProcessOutput.ReadPartialAsync(stdoutTask).ConfigureAwait(false)).Trim();
+                var partialErr = (await ProcessOutput.ReadPartialAsync(stderrTask).ConfigureAwait(false)).Trim();
+                var cancelledByCaller = cancellationToken.IsCancellationRequested;
+                _log.LogWarning(
+                    "CLI delegation {Outcome}: binary={Binary} wallMs={WallMs} timeoutSec={TimeoutSec} partialStdoutChars={StdoutChars} partialStderrChars={StderrChars}",
+                    cancelledByCaller ? "cancelled" : "timed out",
+                    binary, wallClock.ElapsedMilliseconds, timeout.TotalSeconds,
+                    partialOut.Length, partialErr.Length);
+
+                // Hand back whatever it produced. A delegated run is expensive and slow; losing
+                // several minutes of work to an error string is the worst possible outcome.
+                var bits = new List<string>();
+                if (partialErr.Length > 0) bits.Add($"stderr: {Truncate(partialErr, 600)}");
+                if (partialOut.Length > 0) bits.Add($"stdout: {Truncate(partialOut, 600)}");
+                if (bits.Count == 0) bits.Add("(no output captured before the kill)");
+                var reason = cancelledByCaller
+                    ? $"'{binary}' delegation cancelled."
+                    : $"'{binary}' delegation timed out after {timeout.TotalSeconds:F0}s and was killed.";
+                return $"Error: {reason}\n{string.Join("\n", bits)}";
             }
 
             var stdout = await stdoutTask.ConfigureAwait(false);

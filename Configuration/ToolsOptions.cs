@@ -84,6 +84,14 @@ public sealed class ToolsOptions
     public bool AllowCliDelegation { get; set; }
 
     /// <summary>
+    /// Timeout for a single delegate_to_* run, in seconds. A delegated CLI does real work on
+    /// someone else's subscription and can legitimately run for minutes, so this is far longer
+    /// than <see cref="ShellTimeoutSeconds"/>. On expiry the CLI is killed and whatever it had
+    /// printed is returned with the error rather than discarded.
+    /// </summary>
+    public int CliDelegationTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
     /// Absolute path to the Claude Code CLI executable. Optional — when empty (the default)
     /// the binary name <c>claude</c> is resolved via the process PATH. Set this when the CLI
     /// lives in a non-PATH location (e.g. a per-user install under <c>%LOCALAPPDATA%</c>) or
