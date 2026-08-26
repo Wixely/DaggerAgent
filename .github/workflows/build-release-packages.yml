@@ -106,6 +106,7 @@ jobs:
           name: ${{ env.PACKAGE_BASENAME }}
           path: ${{ env.PACKAGE_BASENAME }}-${{ env.PACKAGE_VERSION }}.zip
           if-no-files-found: error
+          retention-days: 1
 
   docker:
     name: Publish Docker image
