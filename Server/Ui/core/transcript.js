@@ -170,6 +170,9 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     const resultEl = document.createElement("span");
     resultEl.className = view.toolPendingClass ? `tc-result ${view.toolPendingClass}` : "tc-result";
     resultEl.textContent = view.toolPending;
+    // Progress frames may only overwrite a result slot that is still waiting; a flag is
+    // more reliable than testing for the pending class, which a shell may leave unset.
+    resultEl.dataset.pending = "1";
 
     node.append(nameEl, argsEl, resultEl);
     state.toolCallNodes[id || ""] = node;
@@ -177,14 +180,57 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     state.lastBlockType = "tool_call";
   }
 
-  function appendToolResult(id, excerpt, length) {
+  function appendToolResult(id, excerpt, length, durationMs) {
     const node = state.toolCallNodes[id || ""];
     if (!node) return;
     const resultEl = node.querySelector(".tc-result");
     if (!resultEl) return;
     withScrollStick(() => {
-      resultEl.textContent = view.toolResult(excerpt, length);
+      resultEl.textContent = view.toolResult(excerpt, length, durationMs);
+      delete resultEl.dataset.pending;
       if (view.toolPendingClass) resultEl.classList.remove(view.toolPendingClass);
+      // Whatever the call was doing inside is over with it.
+      node.querySelector(".tc-activity")?.remove();
+    });
+  }
+
+  // A progress frame lists every call still running, so this is a refresh rather than a
+  // delta: a call that stops appearing has finished, and any activity line hanging off it
+  // comes down at the same time. Calls with no node of their own belong to a sub-agent and
+  // are shown under the nearest ancestor call this transcript does have a node for.
+  function updateToolProgress(calls) {
+    if (!state.currentMsg) return;
+    const parentOf = new Map(calls.map((c) => [c.id, c.parentId]));
+    const anchorFor = (call) => {
+      let p = call.parentId;
+      while (p && !state.toolCallNodes[p]) p = parentOf.get(p);
+      return p;
+    };
+    const nested = new Map();
+    withScrollStick(() => {
+      for (const call of calls) {
+        const node = state.toolCallNodes[call.id || ""];
+        if (node) {
+          const resultEl = node.querySelector(".tc-result");
+          if (resultEl && resultEl.dataset.pending) resultEl.textContent = view.toolProgress(call.elapsedMs);
+          continue;
+        }
+        const anchor = anchorFor(call);
+        if (!anchor) continue;
+        if (!nested.has(anchor)) nested.set(anchor, []);
+        nested.get(anchor).push(call);
+      }
+      for (const [id, node] of Object.entries(state.toolCallNodes)) {
+        const children = nested.get(id);
+        let activity = node.querySelector(".tc-activity");
+        if (!children) { activity?.remove(); continue; }
+        if (!activity) {
+          activity = document.createElement("span");
+          activity.className = "tc-activity";
+          node.appendChild(activity);
+        }
+        activity.textContent = children.map((c) => view.toolActivity(c.name, c.elapsedMs)).join("\n");
+      }
     });
   }
 
@@ -220,6 +266,7 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     appendThinkingChunk,
     appendToolCall,
     appendToolResult,
+    updateToolProgress,
     setUsageStamp,
     showRetryButton,
   };

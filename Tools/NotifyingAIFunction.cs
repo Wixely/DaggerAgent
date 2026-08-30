@@ -42,9 +42,26 @@ public sealed class NotifyingAIFunction : AIFunction
     public override MethodInfo? UnderlyingMethod => _inner.UnderlyingMethod;
     public override IReadOnlyDictionary<string, object?> AdditionalProperties => _inner.AdditionalProperties;
 
+    // The call id of the invocation executing on the current async flow. Assigned for the
+    // duration of InvokeCoreAsync so anything the tool starts — a sub-agent's whole turn, and
+    // so every tool that turn invokes — can report which call it is running under. An
+    // AsyncLocal write inside an async method is invisible to the caller once the method
+    // returns, so there is nothing to restore.
+    private static readonly AsyncLocal<string?> _enclosingCallId = new();
+
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
-        var started = new ToolCallEvent(_jobId, _depth, Name, ToolCallSink.DigestArgs(arguments));
+        // The function-invoking client publishes the call it is servicing on an AsyncLocal of
+        // its own; that is the only route to the model's call id from inside the function.
+        var callId = FunctionInvokingChatClient.CurrentContext?.CallContent.CallId;
+        if (string.IsNullOrEmpty(callId)) callId = null;
+
+        var started = new ToolCallEvent(_jobId, _depth, Name, ToolCallSink.DigestArgs(arguments))
+        {
+            CallId = callId,
+            ParentCallId = _enclosingCallId.Value,
+        };
+        _enclosingCallId.Value = callId;
         _sink.Started(started);
 
         var sw = Stopwatch.StartNew();

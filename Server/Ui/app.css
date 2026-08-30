@@ -376,7 +376,7 @@ body { font-feature-settings: "ss01"; }
 
 .tool-call { display: grid; gap: 2px; padding: 5px 0 5px 10px; }
 .tool-call .tc-name { color: var(--muted); font-weight: 700; font-family: var(--font-mono); }
-.tool-call .tc-args, .tool-call .tc-result {
+.tool-call .tc-args, .tool-call .tc-result, .tool-call .tc-activity {
   display: block; color: var(--faint);
   font-family: var(--font-mono); font-size: 0.7rem; line-height: 1.45;
   white-space: pre-wrap; word-wrap: break-word;

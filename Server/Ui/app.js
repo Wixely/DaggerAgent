@@ -189,7 +189,12 @@ const transcriptView = {
   },
   toolPending: "…",
   toolPendingClass: "text-muted",
-  toolResult: (excerpt, length) => `← ${excerpt} (${length} chars)`,
+  toolProgress: (elapsedMs) => `… ${formatDuration(elapsedMs)}`,
+  toolActivity: (name, elapsedMs) => `↳ ${name} ${formatDuration(elapsedMs)}`,
+  // durationMs is the tool's own measured run time. It is absent when no measurement
+  // reached the stream, and the timing is then simply omitted rather than shown as zero.
+  toolResult: (excerpt, length, durationMs) =>
+    `← ${excerpt} (${length} chars${durationMs == null ? "" : `, ${formatDuration(durationMs)}`})`,
   thinkingSummary: "thinking…",
   usageStampClass: "usage-stamp text-muted",
   usageText: (u) => `in:${u.inputTokens} out:${u.outputTokens} think:${u.thinkingTokens} · ${u.costUsd ? `$${Number(u.costUsd).toFixed(4)}` : "$0"}`,
@@ -223,6 +228,18 @@ function formatToolArgs(args) {
       })
       .join(", ");
   } catch { return ""; }
+}
+
+// Tool durations span three orders of magnitude in one transcript - a cached read is
+// milliseconds, a delegated CLI run is minutes - so the unit changes with the value
+// rather than forcing a long run to read as "192000ms".
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
 function switchTab(name) {
