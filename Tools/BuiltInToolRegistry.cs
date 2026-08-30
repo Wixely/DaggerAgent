@@ -62,7 +62,7 @@ public sealed class BuiltInToolRegistry
         if (_toolsOptions.MaxToolResultChars > 0)
             tools.AddRange(_toolResults.Build(parentJobId));
         // delegate_to_claude / delegate_to_codex — gated inside .Build() by AllowCliDelegation.
-        tools.AddRange(_cliDelegation.Build(parentJobId));
+        tools.AddRange(_cliDelegation.Build(parentJobId, currentDepth));
         return tools;
     }
 }

@@ -23,6 +23,7 @@ public sealed class CliDelegationTools
     private readonly ToolsOptions _toolsOptions;
     private readonly HostLaunchInfo _launchInfo;
     private readonly CliSessionStore _sessions;
+    private readonly IToolCallSink _sink;
     private readonly ILogger<CliDelegationTools> _log;
 
     public CliDelegationTools(
@@ -30,16 +31,18 @@ public sealed class CliDelegationTools
         IOptions<ToolsOptions> toolsOptions,
         HostLaunchInfo launchInfo,
         CliSessionStore sessions,
+        IToolCallSink sink,
         ILogger<CliDelegationTools> log)
     {
         _mcp = mcp.Value;
         _toolsOptions = toolsOptions.Value;
         _launchInfo = launchInfo;
         _sessions = sessions;
+        _sink = sink;
         _log = log;
     }
 
-    public IEnumerable<AITool> Build(string? parentJobId)
+    public IEnumerable<AITool> Build(string? parentJobId, int depth = 0)
     {
         // AllowCliDelegation is the master gate. When off, the tools aren't even registered —
         // a cheap way to keep the tool surface tidy and the agent from trying to use them.
@@ -70,24 +73,49 @@ public sealed class CliDelegationTools
                     _sessions.Clear(jobId, "claude");
                 }
             }
-            return await RunCliAsync(
-                binary: ResolveCliBinary(_toolsOptions.ClaudeCliPath, "claude"),
-                buildArgs: cfgPath =>
-                {
-                    var list = new List<string> { "-p", task, "--output-format", "json", "--mcp-config", cfgPath };
-                    if (!string.IsNullOrWhiteSpace(resumeSession))
+            // Relay the CLI's own tool activity to the sink as child events under this
+            // delegation call, so a host watching it (the SSE tool_progress feed) can show
+            // "delegate_to_claude ↳ Read foo.cs" while the run is going. The parent call id
+            // comes from the invoking client's ambient context — the same source
+            // NotifyingAIFunction reads — and is null outside the function loop, in which
+            // case the events still attribute by job id alone.
+            var relay = new ClaudeStreamRelay(
+                _sink, jobId, depth,
+                FunctionInvokingChatClient.CurrentContext?.CallContent.CallId);
+            try
+            {
+                return await RunCliAsync(
+                    binary: ResolveCliBinary(_toolsOptions.ClaudeCliPath, "claude"),
+                    buildArgs: cfgPath =>
                     {
-                        list.Add("--resume");
-                        list.Add(resumeSession);
-                    }
-                    return list;
-                },
-                buildConfig: CliMcpConfigBuilder.BuildClaudeConfig,
-                configFileName: "claude-mcp.json",
-                envVarsOverride: null,
-                parseStdout: stdout => ParseClaudeJsonResultAndStashSession(stdout, jobId, cwd),
-                workingDirectory: workingDirectory,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                        // stream-json (NDJSON, one event per line) instead of json, so the
+                        // run's tool activity is observable while it happens. The terminal
+                        // "result" event carries exactly the fields the json envelope did —
+                        // session_id, total_cost_usd, is_error, usage — so session resume
+                        // and usage logging are unchanged (verified on claude 2.1.161).
+                        // --verbose is required to combine -p with stream-json.
+                        var list = new List<string> { "-p", task, "--output-format", "stream-json", "--verbose", "--mcp-config", cfgPath };
+                        if (!string.IsNullOrWhiteSpace(resumeSession))
+                        {
+                            list.Add("--resume");
+                            list.Add(resumeSession);
+                        }
+                        return list;
+                    },
+                    buildConfig: CliMcpConfigBuilder.BuildClaudeConfig,
+                    configFileName: "claude-mcp.json",
+                    envVarsOverride: null,
+                    parseStdout: stdout => ParseClaudeStreamJsonResultAndStashSession(stdout, jobId, cwd),
+                    workingDirectory: workingDirectory,
+                    onStdoutLine: relay.OnLine,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                // A killed or crashed run never sends tool_result for in-flight calls; close
+                // them so a live tracker doesn't show them running forever.
+                relay.CloseOpenCalls();
+            }
         }
 
         async Task<string> DelegateToCodex(
@@ -257,7 +285,8 @@ public sealed class CliDelegationTools
         Func<string, IDictionary<string, string>>? envVarsOverride,
         Func<string, string> parseStdout,
         string? workingDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? onStdoutLine = null)
     {
         var cwd = ResolveCwd(workingDirectory);
 
@@ -328,8 +357,13 @@ public sealed class CliDelegationTools
 
             // No cancellation token on the reads: the kill above closes the pipes, ending these
             // naturally with whatever the CLI wrote. See ProcessOutput for why passing the token
-            // instead throws that output away.
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            // instead throws that output away. Buffered read by default; line-streaming when a
+            // caller observes the run as it happens (Claude's stream-json) — either way the
+            // task resolves to the full stdout, so the timeout path's partial-output salvage
+            // works the same.
+            var stdoutTask = onStdoutLine is null
+                ? proc.StandardOutput.ReadToEndAsync()
+                : ReadLinesAsync(proc.StandardOutput, onStdoutLine);
             var stderrTask = proc.StandardError.ReadToEndAsync();
 
             try { await proc.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false); }
@@ -395,6 +429,195 @@ public sealed class CliDelegationTools
         {
             try { Directory.Delete(tempDir, recursive: true); }
             catch { /* best-effort; OS will eventually GC temp */ }
+        }
+    }
+
+    /// <summary>
+    /// Drains a pipe line-by-line, invoking <paramref name="onLine"/> per line, and resolves to
+    /// the full text once the pipe closes. An observer that throws must not kill the delegation
+    /// it is merely watching, so its exceptions are swallowed; the observer does its own logging.
+    /// </summary>
+    private static async Task<string> ReadLinesAsync(System.IO.StreamReader reader, Action<string> onLine)
+    {
+        var sb = new StringBuilder();
+        while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+        {
+            sb.Append(line).Append('\n');
+            try { onLine(line); } catch { /* observer-only */ }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Parses <c>--output-format stream-json</c> output: finds the terminal <c>result</c> event —
+    /// the same envelope <c>--output-format json</c> returned — and hands that one line to the
+    /// original parser, so session stashing, usage logging and the meta line are unchanged. A
+    /// stream with no result event means the run was killed or crashed mid-way; the assistant
+    /// text seen so far is salvaged rather than dumping raw NDJSON at the model.
+    /// </summary>
+    private string ParseClaudeStreamJsonResultAndStashSession(string stdout, string jobId, string cwd)
+    {
+        var lines = stdout.Split('\n');
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i].Trim();
+            if (line.Length == 0 || line[0] != '{') continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("type", out var t)
+                    && t.ValueKind == JsonValueKind.String
+                    && t.GetString() == "result")
+                {
+                    return ParseClaudeJsonResultAndStashSession(line, jobId, cwd);
+                }
+            }
+            catch (JsonException) { /* diagnostics interleaved with events — keep scanning */ }
+        }
+
+        var salvaged = new StringBuilder();
+        foreach (var raw in lines)
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] != '{') continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("type", out var t) || t.GetString() != "assistant"
+                    || !root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object
+                    || !msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+                foreach (var item in content.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object
+                        && item.TryGetProperty("type", out var it) && it.GetString() == "text"
+                        && item.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                    {
+                        salvaged.Append(text.GetString());
+                    }
+                }
+            }
+            catch (JsonException) { }
+        }
+        return salvaged.Length > 0
+            ? salvaged + "\n\n[claude stream ended without a result event — output may be incomplete]"
+            : "(claude returned no output)";
+    }
+
+    /// <summary>
+    /// Translates the Claude CLI's stream-json events into child <see cref="ToolCallEvent"/>s
+    /// under the enclosing <c>delegate_to_claude</c> call, so a host watching the sink sees
+    /// which tool the delegated run is on. Observability only — the model still receives the
+    /// final aggregate. Shape verified against claude 2.1.161: an <c>assistant</c> event
+    /// carries <c>tool_use</c> content items <c>{id, name, input}</c>; a <c>user</c> event
+    /// carries <c>tool_result</c> items <c>{tool_use_id, content, is_error}</c>. Elapsed is
+    /// measured between the two events arriving here — close enough for display, which is all
+    /// these events are for. Same privacy stance as <see cref="ToolCallSink.DigestArgs"/>: the
+    /// digest carries argument names, never values.
+    /// </summary>
+    private sealed class ClaudeStreamRelay
+    {
+        private readonly IToolCallSink _sink;
+        private readonly string _jobId;
+        private readonly int _depth;
+        private readonly string? _parentCallId;
+        private readonly Dictionary<string, (ToolCallEvent Started, long StartedAt)> _open = new(StringComparer.Ordinal);
+
+        public ClaudeStreamRelay(IToolCallSink sink, string jobId, int depth, string? parentCallId)
+        {
+            _sink = sink;
+            _jobId = jobId;
+            _depth = depth;
+            _parentCallId = parentCallId;
+        }
+
+        public void OnLine(string raw)
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] != '{') return;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("type", out var t) || t.ValueKind != JsonValueKind.String)
+                {
+                    return;
+                }
+                var type = t.GetString();
+                if (type is not ("assistant" or "user")) return;
+                if (!root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object
+                    || !msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                {
+                    return;
+                }
+                foreach (var item in content.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object
+                        || !item.TryGetProperty("type", out var it) || it.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+                    if (type == "assistant" && it.GetString() == "tool_use") OnToolUse(item);
+                    else if (type == "user" && it.GetString() == "tool_result") OnToolResult(item);
+                }
+            }
+            catch (JsonException) { /* claude interleaves diagnostics with events on stdout */ }
+        }
+
+        private void OnToolUse(JsonElement item)
+        {
+            if (!item.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String) return;
+            if (!item.TryGetProperty("name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String) return;
+            var id = idEl.GetString()!;
+            if (_open.ContainsKey(id)) return;
+            var argNames = item.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object
+                ? string.Join(",", input.EnumerateObject().Select(p => p.Name))
+                : "";
+            var started = new ToolCallEvent(_jobId, _depth, nameEl.GetString()!, argNames.Length > 0 ? argNames : "(none)")
+            {
+                CallId = id,
+                ParentCallId = _parentCallId,
+            };
+            _open[id] = (started, Stopwatch.GetTimestamp());
+            _sink.Started(started);
+        }
+
+        private void OnToolResult(JsonElement item)
+        {
+            if (!item.TryGetProperty("tool_use_id", out var idEl) || idEl.ValueKind != JsonValueKind.String) return;
+            if (!_open.Remove(idEl.GetString()!, out var entry)) return;
+            var isError = item.TryGetProperty("is_error", out var err) && err.ValueKind == JsonValueKind.True;
+            var resultChars = item.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
+                ? c.GetString()!.Length
+                : 0;
+            _sink.Completed(entry.Started with
+            {
+                Elapsed = Stopwatch.GetElapsedTime(entry.StartedAt),
+                Succeeded = !isError,
+                ResultChars = resultChars,
+                Error = isError ? "CliToolError" : null,
+            });
+        }
+
+        public void CloseOpenCalls()
+        {
+            foreach (var (_, entry) in _open)
+            {
+                _sink.Completed(entry.Started with
+                {
+                    Elapsed = Stopwatch.GetElapsedTime(entry.StartedAt),
+                    Succeeded = false,
+                    ResultChars = 0,
+                    Error = "DelegationEnded",
+                });
+            }
+            _open.Clear();
         }
     }
 
