@@ -28,7 +28,10 @@ export function createSession({ api, streamPost, state, transcript, host }) {
         transcript.appendToolCall(data.id, data.name, data.args);
         break;
       case "tool_result":
-        transcript.appendToolResult(data.id, data.excerpt || "", data.length || 0);
+        transcript.appendToolResult(data.id, data.excerpt || "", data.length || 0, data.durationMs);
+        break;
+      case "tool_progress":
+        transcript.updateToolProgress(data.calls || []);
         break;
       case "usage":
         transcript.setUsageStamp(data);

@@ -16,7 +16,9 @@ namespace Daggeragent.Server;
 /// Powers the embedded Web UI's live transcript: each ChatResponseUpdate from
 /// <see cref="LlmAgent.RunStreamingTurnAsync(ConversationState, string, IReadOnlyList{AIContent}?, CancellationToken)"/>
 /// is translated into one of a small set of named SSE events so the browser
-/// can render thinking / answer / tool-call / tool-result inline as they happen.
+/// can render thinking / answer / tool-call / tool-result inline as they happen. While a
+/// tool call is in flight a <c>tool_progress</c> frame is written each second on top,
+/// listing every running call with its elapsed time.
 /// </summary>
 public static class JobsStreamEndpoints
 {
@@ -33,6 +35,7 @@ public static class JobsStreamEndpoints
             HttpContext http,
             CreateJobStreamRequest req,
             LlmAgent agent,
+            Tools.ToolCallSink toolCalls,
             IJobStore store,
             IOptions<OpenAIOptions> openAi,
             IOptions<EndpointsOptions> endpoints,
@@ -47,7 +50,7 @@ public static class JobsStreamEndpoints
             // Carry this request's cwd as ambient per-turn context instead of mutating the shared
             // ToolsOptions singleton, which two concurrent turns would clobber. Empty = no override.
             using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
-                await StreamTurnAsync(http, agent, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                await StreamTurnAsync(http, agent, toolCalls, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
@@ -56,6 +59,7 @@ public static class JobsStreamEndpoints
             HttpContext http,
             SendMessageStreamRequest req,
             LlmAgent agent,
+            Tools.ToolCallSink toolCalls,
             IJobStore store,
             IOptions<EndpointsOptions> endpoints,
             IOptions<OpenAIOptions> openAi,
@@ -78,7 +82,7 @@ public static class JobsStreamEndpoints
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
                 state.WorkingDirectory = req.WorkingDirectory!;
             using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
-                await StreamTurnAsync(http, agent, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                await StreamTurnAsync(http, agent, toolCalls, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
@@ -132,6 +136,7 @@ public static class JobsStreamEndpoints
     private static async Task StreamTurnAsync(
         HttpContext http,
         LlmAgent agent,
+        Tools.ToolCallSink toolCalls,
         ConversationState state,
         string prompt,
         IReadOnlyList<ImageInput>? images,
@@ -142,11 +147,32 @@ public static class JobsStreamEndpoints
         http.Response.Headers["Connection"] = "keep-alive";
         http.Response.Headers["X-Accel-Buffering"] = "no";
 
+        var sse = new SseWriter(http.Response);
+
         // Send job-id up front so the UI can hook up plan/pending-write polling immediately.
-        await WriteEventAsync(http, "job", new { jobId = state.Id, status = state.Status.ToString(), model = state.Model }, clientCt).ConfigureAwait(false);
+        await sse.WriteEventAsync("job", new { jobId = state.Id, status = state.Status.ToString(), model = state.Model }, clientCt).ConfigureAwait(false);
 
         var attachments = ConvertImages(images);
         var seenToolCalls = new HashSet<string>(StringComparer.Ordinal);
+
+        // While a tool runs, the loop below is parked inside RunStreamingTurnAsync and nothing
+        // reaches the client: a delegated CLI run is minutes of silence, and a proxy that drops
+        // the idle connection cancels the turn - and kills the CLI with it, since the run is
+        // bound to this request's token. So the tool-call sink feeds a tracker of what is in
+        // flight for this job and its sub-agents, and a ticker on its own task writes a
+        // tool_progress frame each second while anything is. The tracker also supplies
+        // tool_result's duration from the notifier's own measurement.
+        using var tracker = new InFlightToolTracker(toolCalls, state.Id);
+        using var tickerCts = CancellationTokenSource.CreateLinkedTokenSource(clientCt);
+        var ticker = RunProgressTickerAsync(sse, tracker, tickerCts.Token);
+
+        // Idempotent; every exit path stops the ticker before its closing frames so no
+        // progress frame can land after the status.
+        async Task StopTickerAsync()
+        {
+            tickerCts.Cancel();
+            await ticker.ConfigureAwait(false);
+        }
 
         try
         {
@@ -157,14 +183,14 @@ public static class JobsStreamEndpoints
                     switch (content)
                     {
                         case TextReasoningContent rc when !string.IsNullOrEmpty(rc.Text):
-                            await WriteEventAsync(http, "thinking", new { text = rc.Text }, clientCt).ConfigureAwait(false);
+                            await sse.WriteEventAsync("thinking", new { text = rc.Text }, clientCt).ConfigureAwait(false);
                             break;
                         case TextContent tc when !string.IsNullOrEmpty(tc.Text):
-                            await WriteEventAsync(http, "delta", new { text = tc.Text }, clientCt).ConfigureAwait(false);
+                            await sse.WriteEventAsync("delta", new { text = tc.Text }, clientCt).ConfigureAwait(false);
                             break;
                         case FunctionCallContent fc:
                             if (!string.IsNullOrEmpty(fc.CallId) && !seenToolCalls.Add(fc.CallId)) break;
-                            await WriteEventAsync(http, "tool_call", new
+                            await sse.WriteEventAsync("tool_call", new
                             {
                                 id = fc.CallId,
                                 name = fc.Name,
@@ -173,29 +199,34 @@ public static class JobsStreamEndpoints
                             // Plan tool calls also fire a plan_update hint so the UI can refresh that tab.
                             if (fc.Name is "make_plan" or "update_plan")
                             {
-                                await WriteEventAsync(http, "plan_update", new { jobId = state.Id }, clientCt).ConfigureAwait(false);
+                                await sse.WriteEventAsync("plan_update", new { jobId = state.Id }, clientCt).ConfigureAwait(false);
                             }
                             break;
                         case FunctionResultContent fr:
                             var resultText = fr.Result?.ToString() ?? "";
-                            await WriteEventAsync(http, "tool_result", new
+                            // The notifier's measurement of the whole call; null if none reached
+                            // the tracker, rather than a wrong zero.
+                            var durationMs = tracker.TakeCompletedMs(fr.CallId);
+                            await sse.WriteEventAsync("tool_result", new
                             {
                                 id = fr.CallId,
                                 excerpt = resultText.Length > 1024 ? resultText[..1024] + "…(truncated)" : resultText,
                                 length = resultText.Length,
+                                durationMs,
                             }, clientCt).ConfigureAwait(false);
                             break;
                     }
                 }
             }
 
-            await WriteEventAsync(http, "status", new
+            await StopTickerAsync().ConfigureAwait(false);
+            await sse.WriteEventAsync("status", new
             {
                 jobId = state.Id,
                 status = state.Status.ToString(),
                 finishReason = state.LastTurnFinishReason,
             }, clientCt).ConfigureAwait(false);
-            await WriteEventAsync(http, "usage", new
+            await sse.WriteEventAsync("usage", new
             {
                 inputTokens = state.TotalInputTokens,
                 outputTokens = state.TotalOutputTokens,
@@ -207,16 +238,156 @@ public static class JobsStreamEndpoints
         }
         catch (OperationCanceledException)
         {
-            await WriteEventAsync(http, "status", new { jobId = state.Id, status = state.Status.ToString(), cancelled = true }, CancellationToken.None).ConfigureAwait(false);
+            await StopTickerAsync().ConfigureAwait(false);
+            await sse.WriteEventAsync("status", new { jobId = state.Id, status = state.Status.ToString(), cancelled = true }, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            await WriteEventAsync(http, "error", new { message = ex.Message }, CancellationToken.None).ConfigureAwait(false);
+            await StopTickerAsync().ConfigureAwait(false);
+            await sse.WriteEventAsync("error", new { message = ex.Message }, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
-            await http.Response.WriteAsync("event: done\ndata: {}\n\n", CancellationToken.None).ConfigureAwait(false);
-            await http.Response.Body.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+            await StopTickerAsync().ConfigureAwait(false);
+            await sse.WriteRawAsync("event: done\ndata: {}\n\n", CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Writes a <c>tool_progress</c> frame every second while any tool call is in flight, and a
+    /// comment every fifteen seconds when none is, so a long model response with no visible
+    /// tokens keeps the connection alive too. A second matches the counter the UI shows, and
+    /// the frames are a few dozen bytes. Ends quietly on cancellation or a dead connection;
+    /// the turn loop owns error reporting.
+    /// </summary>
+    private static async Task RunProgressTickerAsync(SseWriter sse, InFlightToolTracker tracker, CancellationToken ct)
+    {
+        var idleTicks = 0;
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+                var calls = tracker.Snapshot();
+                if (calls.Count > 0)
+                {
+                    idleTicks = 0;
+                    await sse.WriteEventAsync("tool_progress", new { calls }, ct).ConfigureAwait(false);
+                }
+                else if (++idleTicks >= 15)
+                {
+                    idleTicks = 0;
+                    await sse.WriteCommentAsync("keep-alive", ct).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* a failed write here means the client is gone; the loop reports it */ }
+    }
+
+    /// <summary>
+    /// The tool calls currently running for one streamed turn, fed by <see cref="Tools.ToolCallSink"/>.
+    /// Accepts the job's own calls and, through <see cref="Tools.ToolCallEvent.ParentCallId"/>,
+    /// anything running inside one of them at any depth: a sub-agent's tools arrive tagged with
+    /// the <c>spawn_subagent</c> call that started them. A completed call's duration is held
+    /// until its <see cref="FunctionResultContent"/> reaches the loop, which is always later,
+    /// because the notifier raises Completed before the function returns to the invoking client.
+    /// </summary>
+    private sealed class InFlightToolTracker : IDisposable
+    {
+        private readonly Tools.ToolCallSink _sink;
+        private readonly string _jobId;
+        private readonly object _gate = new();
+        private readonly Dictionary<string, (string Name, string? ParentId, long StartedAt)> _running = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _known = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, double> _completedMs = new(StringComparer.Ordinal);
+
+        public InFlightToolTracker(Tools.ToolCallSink sink, string jobId)
+        {
+            _sink = sink;
+            _jobId = jobId;
+            _sink.ToolCallStarted += OnStarted;
+            _sink.ToolCallCompleted += OnCompleted;
+        }
+
+        public void Dispose()
+        {
+            _sink.ToolCallStarted -= OnStarted;
+            _sink.ToolCallCompleted -= OnCompleted;
+        }
+
+        private void OnStarted(Tools.ToolCallEvent e)
+        {
+            if (e.CallId is null) return;
+            lock (_gate)
+            {
+                var ours = e.JobId == _jobId || (e.ParentCallId is not null && _known.Contains(e.ParentCallId));
+                if (!ours) return;
+                _known.Add(e.CallId);
+                _running[e.CallId] = (e.ToolName, e.ParentCallId, System.Diagnostics.Stopwatch.GetTimestamp());
+            }
+        }
+
+        private void OnCompleted(Tools.ToolCallEvent e)
+        {
+            if (e.CallId is null) return;
+            lock (_gate)
+            {
+                if (!_running.Remove(e.CallId)) return;
+                _completedMs[e.CallId] = Math.Round(e.Elapsed.TotalMilliseconds, 1);
+            }
+        }
+
+        public double? TakeCompletedMs(string? callId)
+        {
+            if (string.IsNullOrEmpty(callId)) return null;
+            lock (_gate) return _completedMs.Remove(callId, out var ms) ? ms : null;
+        }
+
+        public List<object> Snapshot()
+        {
+            lock (_gate)
+            {
+                var now = System.Diagnostics.Stopwatch.GetTimestamp();
+                return _running.Select(kv => (object)new
+                {
+                    id = kv.Key,
+                    name = kv.Value.Name,
+                    parentId = kv.Value.ParentId,
+                    elapsedMs = Math.Round(System.Diagnostics.Stopwatch.GetElapsedTime(kv.Value.StartedAt, now).TotalMilliseconds),
+                }).ToList();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Serialises writes to one SSE response. The turn loop and the progress ticker both write
+    /// to it, and one frame interleaved with another is two corrupt frames.
+    /// </summary>
+    private sealed class SseWriter
+    {
+        private readonly HttpResponse _response;
+        private readonly SemaphoreSlim _gate = new(1, 1);
+
+        public SseWriter(HttpResponse response) => _response = response;
+
+        public Task WriteEventAsync(string eventName, object payload, CancellationToken ct) =>
+            WriteRawAsync($"event: {eventName}\ndata: {JsonSerializer.Serialize(payload, JsonOpts)}\n\n", ct);
+
+        public Task WriteCommentAsync(string text, CancellationToken ct) => WriteRawAsync($": {text}\n\n", ct);
+
+        public async Task WriteRawAsync(string frame, CancellationToken ct)
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await _response.WriteAsync(frame, ct).ConfigureAwait(false);
+                await _response.Body.FlushAsync(ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _gate.Release();
+            }
         }
     }
 
@@ -235,10 +406,4 @@ public static class JobsStreamEndpoints
         return list.Count == 0 ? null : list;
     }
 
-    private static async Task WriteEventAsync(HttpContext http, string eventName, object payload, CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(payload, JsonOpts);
-        await http.Response.WriteAsync($"event: {eventName}\ndata: {json}\n\n", ct).ConfigureAwait(false);
-        await http.Response.Body.FlushAsync(ct).ConfigureAwait(false);
-    }
 }

@@ -22,6 +22,22 @@ namespace Daggeragent.Tools;
 /// </summary>
 public sealed record ToolCallEvent(string JobId, int Depth, string ToolName, string ArgsDigest)
 {
+    /// <summary>
+    /// The model's id for this invocation (<c>FunctionCallContent.CallId</c>). A host that also
+    /// watches the streamed <c>tool_call</c> / <c>tool_result</c> pair needs it to match this
+    /// event to that pair. Null when the function was invoked outside the function-invoking
+    /// chat client's loop.
+    /// </summary>
+    public string? CallId { get; init; }
+
+    /// <summary>
+    /// <see cref="CallId"/> of the invocation this one is running inside: a tool such as
+    /// <c>spawn_subagent</c> starts another agent, and every tool that agent runs reports the
+    /// spawning call here. That is what lets a host show a sub-agent's activity under the call
+    /// that started it without walking job parent ids. Null at the top level.
+    /// </summary>
+    public string? ParentCallId { get; init; }
+
     /// <summary>Wall-clock duration. Zero on the started event.</summary>
     public TimeSpan Elapsed { get; init; }
 
