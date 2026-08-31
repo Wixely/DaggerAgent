@@ -119,7 +119,20 @@ public sealed class AcpDelegationTools
 }
 
 /// <summary>
-/// Live ACP agent connections, keyed by (job, agent, cwd). A lease is one spawned child
+/// One live delegated agent, whatever wire protocol it speaks: process + connection + session,
+/// one prompt at a time. <see cref="AcpAgentLease"/> is the ACP shape,
+/// <see cref="CodexAppServerLease"/> the Codex app-server one.
+/// </summary>
+public interface IExternalAgentLease : IDisposable
+{
+    AcpAgentConfig Config { get; }
+    bool IsAlive { get; }
+    TimeSpan IdleFor { get; }
+    Task<string> PromptAsync(string task, string? parentCallId, CancellationToken ct);
+}
+
+/// <summary>
+/// Live delegated-agent connections, keyed by (job, agent, cwd). A lease is one spawned child
 /// process with an initialized connection and an open session; it is reused across
 /// delegations in the same job and dropped after <see cref="AcpAgentConfig.IdleTimeoutSeconds"/>
 /// unused, when its process dies, or when a turn times out (a wedged agent is not worth
@@ -128,23 +141,25 @@ public sealed class AcpDelegationTools
 public sealed class AcpConnectionPool : IDisposable
 {
     private readonly IToolCallSink _sink;
+    private readonly PermissionBroker _permissions;
     private readonly ILogger<AcpConnectionPool> _log;
     private readonly object _gate = new();
-    private readonly Dictionary<string, AcpAgentLease> _leases = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IExternalAgentLease> _leases = new(StringComparer.OrdinalIgnoreCase);
     private readonly Timer _evictor;
 
-    public AcpConnectionPool(IToolCallSink sink, ILogger<AcpConnectionPool> log)
+    public AcpConnectionPool(IToolCallSink sink, PermissionBroker permissions, ILogger<AcpConnectionPool> log)
     {
         _sink = sink;
+        _permissions = permissions;
         _log = log;
         _evictor = new Timer(_ => EvictIdle(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
-    public async Task<AcpAgentLease> GetOrCreateAsync(
+    public async Task<IExternalAgentLease> GetOrCreateAsync(
         AcpAgentConfig cfg, string jobId, int depth, string cwd, bool fresh, CancellationToken ct)
     {
         var key = $"{jobId}|{cfg.Name}|{cwd}";
-        AcpAgentLease? stale = null;
+        IExternalAgentLease? stale = null;
         lock (_gate)
         {
             if (_leases.TryGetValue(key, out var existing))
@@ -159,8 +174,10 @@ public sealed class AcpConnectionPool : IDisposable
         // Spawn outside the lock — process start plus two protocol round-trips. A concurrent
         // same-key create is only possible from misuse (turns are serial per job); last one
         // in wins and the loser is disposed.
-        var lease = await AcpAgentLease.StartAsync(cfg, jobId, depth, cwd, _sink, _log, ct).ConfigureAwait(false);
-        AcpAgentLease? loser = null;
+        var lease = string.Equals(cfg.Protocol?.Trim(), "codex-app-server", StringComparison.OrdinalIgnoreCase)
+            ? await CodexAppServerLease.StartAsync(cfg, jobId, depth, cwd, _sink, _permissions, _log, ct).ConfigureAwait(false)
+            : (IExternalAgentLease)await AcpAgentLease.StartAsync(cfg, jobId, depth, cwd, _sink, _permissions, _log, ct).ConfigureAwait(false);
+        IExternalAgentLease? loser = null;
         lock (_gate)
         {
             if (_leases.TryGetValue(key, out var raced)) loser = raced;
@@ -172,7 +189,7 @@ public sealed class AcpConnectionPool : IDisposable
 
     private void EvictIdle()
     {
-        List<(string Key, AcpAgentLease Lease)> drop = new();
+        List<(string Key, IExternalAgentLease Lease)> drop = new();
         lock (_gate)
         {
             foreach (var (key, lease) in _leases)
@@ -192,7 +209,7 @@ public sealed class AcpConnectionPool : IDisposable
     public void Dispose()
     {
         _evictor.Dispose();
-        List<AcpAgentLease> all;
+        List<IExternalAgentLease> all;
         lock (_gate)
         {
             all = _leases.Values.ToList();
@@ -202,8 +219,8 @@ public sealed class AcpConnectionPool : IDisposable
     }
 }
 
-/// <summary>One live child agent: process + connection + session, one prompt at a time.</summary>
-public sealed class AcpAgentLease : IDisposable
+/// <summary>One live ACP child agent: process + connection + session, one prompt at a time.</summary>
+public sealed class AcpAgentLease : IExternalAgentLease
 {
     private readonly Process _proc;
     private readonly ClientSideConnection _conn;
@@ -231,7 +248,7 @@ public sealed class AcpAgentLease : IDisposable
     }
 
     public static async Task<AcpAgentLease> StartAsync(
-        AcpAgentConfig cfg, string jobId, int depth, string cwd, IToolCallSink sink, ILogger log, CancellationToken ct)
+        AcpAgentConfig cfg, string jobId, int depth, string cwd, IToolCallSink sink, PermissionBroker permissions, ILogger log, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -261,7 +278,7 @@ public sealed class AcpAgentLease : IDisposable
         }, CancellationToken.None);
         proc.StandardInput.AutoFlush = true;
 
-        var client = new HostAcpClient(cfg, jobId, depth, sink, log);
+        var client = new HostAcpClient(cfg, jobId, depth, sink, permissions, log);
         var conn = new ClientSideConnection(_ => client, proc.StandardOutput, proc.StandardInput);
         var readLoop = conn.Open();
         try
@@ -380,6 +397,7 @@ public sealed class HostAcpClient : IAcpClient
     private readonly string _jobId;
     private readonly int _depth;
     private readonly IToolCallSink _sink;
+    private readonly PermissionBroker _permissions;
     private readonly ILogger _log;
 
     private readonly object _gate = new();
@@ -388,12 +406,13 @@ public sealed class HostAcpClient : IAcpClient
     private string? _sessionId;
     private string? _parentCallId;
 
-    public HostAcpClient(AcpAgentConfig cfg, string jobId, int depth, IToolCallSink sink, ILogger log)
+    public HostAcpClient(AcpAgentConfig cfg, string jobId, int depth, IToolCallSink sink, PermissionBroker permissions, ILogger log)
     {
         _cfg = cfg;
         _jobId = jobId;
         _depth = depth;
         _sink = sink;
+        _permissions = permissions;
         _log = log;
     }
 
@@ -480,23 +499,86 @@ public sealed class HostAcpClient : IAcpClient
         });
     }
 
-    public ValueTask<RequestPermissionResponse> RequestPermissionAsync(RequestPermissionRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<RequestPermissionResponse> RequestPermissionAsync(RequestPermissionRequest request, CancellationToken cancellationToken = default)
     {
-        var pick = _cfg.AutoGrantPermissions
-            ? request.Options.FirstOrDefault(o => o.Kind == PermissionOptionKind.AllowOnce)
-                ?? request.Options.FirstOrDefault(o => o.Kind == PermissionOptionKind.AllowAlways)
-            : request.Options.FirstOrDefault(o => o.Kind == PermissionOptionKind.RejectOnce)
-                ?? request.Options.FirstOrDefault(o => o.Kind == PermissionOptionKind.RejectAlways);
-
-        _log.LogInformation("ACP permission request from {Agent}: {Decision} (policy AutoGrantPermissions={Policy})",
-            _cfg.Name, pick?.Name ?? "cancelled", _cfg.AutoGrantPermissions);
-
-        return new(new RequestPermissionResponse
+        var policy = (_cfg.PermissionPolicy ?? "deny").Trim().ToLowerInvariant();
+        string? chosen;
+        string decidedBy;
+        if (policy == "allow")
         {
-            Outcome = pick is null
+            chosen = PickOption(request.Options, allow: true);
+            decidedBy = "policy:allow";
+        }
+        else if (policy == "ask")
+        {
+            // Forward to whoever is driving this job (web stream, upstream editor). No
+            // responder or no answer in time falls back to deny — an unattended delegation
+            // must not grant itself rights by waiting long enough.
+            var prompt = new PermissionPrompt(
+                Guid.NewGuid().ToString("N"),
+                _jobId,
+                _cfg.Name,
+                DescribeToolCall(request.ToolCall),
+                request.Options.Select(o => new PermissionPromptOption(o.OptionId, o.Name, KindString(o.Kind))).ToList());
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(5, _cfg.PermissionTimeoutSeconds)));
+            var (handled, optionId) = await _permissions.AskAsync(prompt, timeoutCts.Token).ConfigureAwait(false);
+            if (handled)
+            {
+                // A null answer from a live host is a decision (dismissed) — surface it as
+                // cancelled rather than substituting a reject the human never chose.
+                chosen = optionId;
+                decidedBy = "host";
+            }
+            else
+            {
+                chosen = PickOption(request.Options, allow: false);
+                decidedBy = "policy:deny (no host to ask)";
+            }
+        }
+        else
+        {
+            chosen = PickOption(request.Options, allow: false);
+            decidedBy = "policy:deny";
+        }
+
+        _log.LogInformation("ACP permission request from {Agent}: {Decision} (via {DecidedBy})",
+            _cfg.Name, chosen ?? "cancelled", decidedBy);
+
+        return new RequestPermissionResponse
+        {
+            Outcome = chosen is null
                 ? new CancelledRequestPermissionOutcome()
-                : new SelectedRequestPermissionOutcome { OptionId = pick.OptionId },
-        });
+                : new SelectedRequestPermissionOutcome { OptionId = chosen },
+        };
+    }
+
+    private static string? PickOption(PermissionOption[] options, bool allow) => allow
+        ? (options.FirstOrDefault(o => o.Kind == PermissionOptionKind.AllowOnce)
+            ?? options.FirstOrDefault(o => o.Kind == PermissionOptionKind.AllowAlways))?.OptionId
+        : (options.FirstOrDefault(o => o.Kind == PermissionOptionKind.RejectOnce)
+            ?? options.FirstOrDefault(o => o.Kind == PermissionOptionKind.RejectAlways))?.OptionId;
+
+    private static string KindString(PermissionOptionKind kind) => kind switch
+    {
+        PermissionOptionKind.AllowOnce => "allow_once",
+        PermissionOptionKind.AllowAlways => "allow_always",
+        PermissionOptionKind.RejectOnce => "reject_once",
+        PermissionOptionKind.RejectAlways => "reject_always",
+        _ => "reject_once",
+    };
+
+    /// <summary>The spec types toolCall loosely; pull a human title out of whatever arrived.</summary>
+    private static string DescribeToolCall(object? toolCall)
+    {
+        if (toolCall is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            if (el.TryGetProperty("title", out var title) && title.ValueKind == System.Text.Json.JsonValueKind.String)
+                return title.GetString()!;
+            if (el.TryGetProperty("toolCallId", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String)
+                return id.GetString()!;
+        }
+        return "(tool call)";
     }
 
     // Declared unsupported at initialize (fs/terminal capabilities false). A peer that calls

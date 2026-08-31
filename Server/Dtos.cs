@@ -53,6 +53,10 @@ public sealed record SendMessageStreamRequest(
 /// <summary>One image attachment from the UI. Base64 is just the raw encoding — no data: prefix.</summary>
 public sealed record ImageInput(string MediaType, string Base64);
 
+/// <summary>POST /agent/permissions/resolve — the human's answer to a permission_request frame.
+/// Null/empty OptionId dismisses the prompt (treated as deny by the asking delegation).</summary>
+public sealed record PermissionDecisionBody(string RequestId, string? OptionId);
+
 /// <summary>
 /// Patch shape for ToolsOptions — every field optional so the UI can flip one toggle
 /// without having to re-send the whole settings object.

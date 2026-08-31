@@ -52,6 +52,52 @@ public sealed class AcpRunner
     }
 }
 
+/// <summary>
+/// Forwards a delegated agent's permission request (see <see cref="Tools.PermissionBroker"/>)
+/// up to the editor driving this ACP session, as a session/request_permission of our own. The
+/// option ids pass through unchanged, so the editor's choice maps straight back onto the
+/// delegated agent's options.
+/// </summary>
+internal sealed class UpstreamPermissionResponder : Tools.IPermissionResponder
+{
+    private readonly IAcpClient _client;
+    private readonly string _sessionId;
+
+    public UpstreamPermissionResponder(IAcpClient client, string sessionId)
+    {
+        _client = client;
+        _sessionId = sessionId;
+    }
+
+    public async Task<string?> AskAsync(Tools.PermissionPrompt prompt, CancellationToken ct)
+    {
+        var response = await _client.RequestPermissionAsync(new RequestPermissionRequest
+        {
+            SessionId = _sessionId,
+            // Serialized eagerly: the SDK's source-generated serializer knows JsonElement but
+            // not anonymous types behind an object-typed property.
+            ToolCall = JsonSerializer.SerializeToElement(new
+            {
+                toolCallId = prompt.RequestId,
+                title = $"[{prompt.AgentName}] {prompt.Title}",
+            }),
+            Options = prompt.Options.Select(o => new PermissionOption
+            {
+                OptionId = o.Id,
+                Name = o.Name,
+                Kind = o.Kind switch
+                {
+                    "allow_once" => PermissionOptionKind.AllowOnce,
+                    "allow_always" => PermissionOptionKind.AllowAlways,
+                    "reject_always" => PermissionOptionKind.RejectAlways,
+                    _ => PermissionOptionKind.RejectOnce,
+                },
+            }).ToArray(),
+        }, ct).ConfigureAwait(false);
+        return response.Outcome is SelectedRequestPermissionOutcome selected ? selected.OptionId : null;
+    }
+}
+
 internal sealed class DaggerAcpAgent : IAcpAgent
 {
     private const ushort SupportedProtocolVersion = 1;
@@ -185,6 +231,12 @@ internal sealed class DaggerAcpAgent : IAcpAgent
         using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         session.ActiveTurn = turnCts;
         var seenToolCalls = new HashSet<string>(StringComparer.Ordinal);
+
+        // While the editor drives this session, a delegated agent's permission request (policy
+        // "ask") is forwarded up to it as a session/request_permission of our own — the full
+        // proxy chain: editor ⇄ DaggerAgent ⇄ delegated agent.
+        using var permissionReg = _services.GetRequiredService<Tools.PermissionBroker>()
+            .RegisterResponder(request.SessionId, new UpstreamPermissionResponder(_client, request.SessionId));
 
         try
         {

@@ -33,6 +33,10 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
 
   const scheduleMarkdownRender = createMarkdownScheduler(withScrollStick);
 
+  // requestId → prompt node, so permission_resolved can collapse the right block even
+  // when the answer came from another tab.
+  const permissionNodes = {};
+
   function clearTranscript() {
     mount.replaceChildren(view.emptyState());
   }
@@ -234,6 +238,24 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     });
   }
 
+  // A delegated agent asking permission mid-turn. Rendered inline in the streaming message;
+  // clicking reports the option, and the block collapses when permission_resolved arrives.
+  function showPermissionPrompt(data, onChoose) {
+    if (!state.currentMsg || !view.permissionPrompt) return;
+    const node = view.permissionPrompt(data, onChoose);
+    if (!node) return;
+    permissionNodes[data.requestId || ""] = node;
+    pushSegment(node);
+    state.lastBlockType = "permission";
+  }
+
+  function resolvePermissionPrompt(requestId, optionId) {
+    const node = permissionNodes[requestId || ""];
+    if (!node) return;
+    delete permissionNodes[requestId || ""];
+    withScrollStick(() => node.replaceChildren(view.permissionResolved(optionId)));
+  }
+
   function setUsageStamp(usage) {
     if (!state.currentMsg) return;
     const stamp = state.currentMsg.querySelector(".usage-stamp");
@@ -267,6 +289,8 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     appendToolCall,
     appendToolResult,
     updateToolProgress,
+    showPermissionPrompt,
+    resolvePermissionPrompt,
     setUsageStamp,
     showRetryButton,
   };
