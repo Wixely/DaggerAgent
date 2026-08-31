@@ -114,6 +114,16 @@ public sealed class ToolsOptions
     public string CopilotCliPath { get; set; } = "";
 
     /// <summary>
+    /// External agents reachable over ACP (Agent Client Protocol — JSON-RPC over stdio), each
+    /// exposed as a <c>delegate_to_acp_&lt;name&gt;</c> tool. Unlike the one-shot CLI
+    /// delegations, an ACP agent is a long-lived child process: the connection is pooled per
+    /// (job, agent, cwd), so successive delegations in the same job continue one live session
+    /// with no per-call spawn and no session-id juggling. Gated by
+    /// <see cref="AllowCliDelegation"/> — same trust class as the CLI delegations.
+    /// </summary>
+    public List<AcpAgentConfig> AcpAgents { get; set; } = new();
+
+    /// <summary>
     /// Any tool result whose string output exceeds this many UTF-16 characters is offloaded:
     /// the full payload is held in <c>ToolResultStore</c>, and the model receives a short
     /// placeholder pointing at <c>read_tool_result</c> / <c>grep_tool_result</c> / etc. instead.
@@ -121,6 +131,40 @@ public sealed class ToolsOptions
     /// so 16 000 ≈ 4 K tokens per offload threshold. Set to 0 to disable.
     /// </summary>
     public int MaxToolResultChars { get; set; } = 16_000;
+}
+
+/// <summary>
+/// One external ACP agent. <see cref="Command"/> + <see cref="Arguments"/> spawn the child
+/// process, which must speak ACP (JSON-RPC 2.0, line-delimited) on its stdio — e.g. another
+/// DaggerAgent via <c>dagger acp</c>, Codex's app-server, or an editor-style ACP adapter.
+/// </summary>
+public sealed class AcpAgentConfig
+{
+    /// <summary>Tool suffix: this entry is exposed as <c>delegate_to_acp_&lt;Name&gt;</c>.</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>Executable to spawn. Must be a real executable, not a .cmd shim.</summary>
+    public string Command { get; set; } = "";
+
+    /// <summary>Arguments for <see cref="Command"/> (e.g. <c>["acp"]</c> for DaggerAgent itself).</summary>
+    public List<string> Arguments { get; set; } = new();
+
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// When the agent asks permission for a tool call (session/request_permission): true picks
+    /// the first allow option, false picks a reject option (or cancels). There is no one to ask
+    /// interactively — the delegation runs inside another agent's turn — so this is a standing
+    /// policy, not a prompt. Default deny: granting an external agent write/execute rights
+    /// should be a deliberate choice.
+    /// </summary>
+    public bool AutoGrantPermissions { get; set; }
+
+    /// <summary>Pooled connection is dropped after this long unused. The next call respawns.</summary>
+    public int IdleTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>Per-delegation turn timeout. On expiry the turn is cancelled and the child dropped.</summary>
+    public int PromptTimeoutSeconds { get; set; } = 300;
 }
 
 /// <summary>

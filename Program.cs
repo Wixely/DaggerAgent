@@ -302,6 +302,8 @@ public static class Program
         builder.Services.AddSingleton<IToolCallSink>(sp => sp.GetRequiredService<ToolCallSink>());
         builder.Services.AddSingleton<CliSessionStore>();
         builder.Services.AddSingleton<CliDelegationTools>();
+        builder.Services.AddSingleton<AcpConnectionPool>();
+        builder.Services.AddSingleton<AcpDelegationTools>();
         builder.Services.AddSingleton<RuntimeConfigStore>();
         builder.Services.AddSingleton<BuiltInToolRegistry>();
 
