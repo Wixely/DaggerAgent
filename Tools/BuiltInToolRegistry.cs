@@ -15,6 +15,7 @@ public sealed class BuiltInToolRegistry
     private readonly PlanningTools _planning;
     private readonly ToolResultTools _toolResults;
     private readonly CliDelegationTools _cliDelegation;
+    private readonly AcpDelegationTools _acpDelegation;
     private readonly AgentOptions _agentOptions;
     private readonly ToolsOptions _toolsOptions;
 
@@ -28,6 +29,7 @@ public sealed class BuiltInToolRegistry
         PlanningTools planning,
         ToolResultTools toolResults,
         CliDelegationTools cliDelegation,
+        AcpDelegationTools acpDelegation,
         IOptions<AgentOptions> agentOptions,
         IOptions<ToolsOptions> toolsOptions)
     {
@@ -40,6 +42,7 @@ public sealed class BuiltInToolRegistry
         _planning = planning;
         _toolResults = toolResults;
         _cliDelegation = cliDelegation;
+        _acpDelegation = acpDelegation;
         _agentOptions = agentOptions.Value;
         _toolsOptions = toolsOptions.Value;
     }
@@ -63,6 +66,8 @@ public sealed class BuiltInToolRegistry
             tools.AddRange(_toolResults.Build(parentJobId));
         // delegate_to_claude / delegate_to_codex — gated inside .Build() by AllowCliDelegation.
         tools.AddRange(_cliDelegation.Build(parentJobId, currentDepth));
+        // delegate_to_acp_* — pooled ACP agents; same AllowCliDelegation gate inside .Build().
+        tools.AddRange(_acpDelegation.Build(parentJobId, currentDepth));
         return tools;
     }
 }
