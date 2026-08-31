@@ -33,6 +33,20 @@ export function createSession({ api, streamPost, state, transcript, host }) {
       case "tool_progress":
         transcript.updateToolProgress(data.calls || []);
         break;
+      case "permission_request":
+        transcript.showPermissionPrompt(data, async (optionId) => {
+          try {
+            await api("/permissions/resolve", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requestId: data.requestId, optionId }),
+            });
+          } catch (err) { console.error("permission resolve failed", err); }
+        });
+        break;
+      case "permission_resolved":
+        transcript.resolvePermissionPrompt(data.requestId, data.optionId);
+        break;
       case "usage":
         transcript.setUsageStamp(data);
         break;

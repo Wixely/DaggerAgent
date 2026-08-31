@@ -191,6 +191,21 @@ const transcriptView = {
   toolPendingClass: "text-muted",
   toolProgress: (elapsedMs) => `… ${formatDuration(elapsedMs)}`,
   toolActivity: (name, elapsedMs) => `↳ ${name} ${formatDuration(elapsedMs)}`,
+  permissionPrompt: (data, onChoose) => {
+    const wrap = el("div", { class: "permission-prompt" },
+      el("span", { class: "pp-title" }, `${data.agent || "delegated agent"} asks: ${data.title || "permission"}`));
+    const row = el("div", { class: "pp-actions" });
+    for (const opt of data.options || []) {
+      row.appendChild(el("button", {
+        class: `pp-btn ${String(opt.kind || "").startsWith("allow") ? "pp-allow" : "pp-reject"}`,
+        onclick: () => onChoose(opt.id),
+      }, opt.name || opt.id));
+    }
+    wrap.appendChild(row);
+    return wrap;
+  },
+  permissionResolved: (optionId) => el("span", { class: "pp-resolved text-muted" },
+    optionId ? `→ permission: ${optionId}` : "→ permission request dismissed"),
   // durationMs is the tool's own measured run time. It is absent when no measurement
   // reached the stream, and the timing is then simply omitted rather than shown as zero.
   toolResult: (excerpt, length, durationMs) =>

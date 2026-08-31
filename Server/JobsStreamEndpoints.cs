@@ -36,6 +36,7 @@ public static class JobsStreamEndpoints
             CreateJobStreamRequest req,
             LlmAgent agent,
             Tools.ToolCallSink toolCalls,
+            Tools.PermissionBroker permissions,
             IJobStore store,
             IOptions<OpenAIOptions> openAi,
             IOptions<EndpointsOptions> endpoints,
@@ -50,7 +51,7 @@ public static class JobsStreamEndpoints
             // Carry this request's cwd as ambient per-turn context instead of mutating the shared
             // ToolsOptions singleton, which two concurrent turns would clobber. Empty = no override.
             using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
-                await StreamTurnAsync(http, agent, toolCalls, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                await StreamTurnAsync(http, agent, toolCalls, permissions, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
@@ -60,6 +61,7 @@ public static class JobsStreamEndpoints
             SendMessageStreamRequest req,
             LlmAgent agent,
             Tools.ToolCallSink toolCalls,
+            Tools.PermissionBroker permissions,
             IJobStore store,
             IOptions<EndpointsOptions> endpoints,
             IOptions<OpenAIOptions> openAi,
@@ -82,8 +84,17 @@ public static class JobsStreamEndpoints
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
                 state.WorkingDirectory = req.WorkingDirectory!;
             using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
-                await StreamTurnAsync(http, agent, toolCalls, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                await StreamTurnAsync(http, agent, toolCalls, permissions, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
+        });
+
+        // Delivers the human's click for a permission_request frame. Not per-job: request ids
+        // are unguessable and single-use, and the prompt may be answered from any open tab.
+        group.MapPost("/permissions/resolve", (PermissionDecisionBody body, Tools.PermissionBroker broker) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.RequestId)) return Results.BadRequest(new { error = "requestId required" });
+            var resolved = broker.TryResolve(body.RequestId, string.IsNullOrWhiteSpace(body.OptionId) ? null : body.OptionId);
+            return Results.Json(new { resolved }, JsonOpts);
         });
 
         return app;
@@ -137,6 +148,7 @@ public static class JobsStreamEndpoints
         HttpContext http,
         LlmAgent agent,
         Tools.ToolCallSink toolCalls,
+        Tools.PermissionBroker permissions,
         ConversationState state,
         string prompt,
         IReadOnlyList<ImageInput>? images,
@@ -148,6 +160,12 @@ public static class JobsStreamEndpoints
         http.Response.Headers["X-Accel-Buffering"] = "no";
 
         var sse = new SseWriter(http.Response);
+
+        // While this stream drives the job, a delegated agent's permission request (policy
+        // "ask") is put in front of the browser instead of being answered from standing
+        // policy — the upstream half of the delegation proxy.
+        using var permissionReg = permissions.RegisterResponder(
+            state.Id, new SsePermissionResponder(sse, permissions));
 
         // Send job-id up front so the UI can hook up plan/pending-write polling immediately.
         await sse.WriteEventAsync("job", new { jobId = state.Id, status = state.Status.ToString(), model = state.Model }, clientCt).ConfigureAwait(false);
@@ -357,6 +375,45 @@ public static class JobsStreamEndpoints
                     elapsedMs = Math.Round(System.Diagnostics.Stopwatch.GetElapsedTime(kv.Value.StartedAt, now).TotalMilliseconds),
                 }).ToList();
             }
+        }
+    }
+
+    /// <summary>
+    /// Puts a delegated agent's permission request in front of the browser as a
+    /// <c>permission_request</c> frame and waits for POST /agent/permissions/resolve to deliver
+    /// the click. The resolution is echoed back as <c>permission_resolved</c> so the prompt UI
+    /// clears even when the decision arrived from another tab.
+    /// </summary>
+    private sealed class SsePermissionResponder : Tools.IPermissionResponder
+    {
+        private readonly SseWriter _sse;
+        private readonly Tools.PermissionBroker _broker;
+
+        public SsePermissionResponder(SseWriter sse, Tools.PermissionBroker broker)
+        {
+            _sse = sse;
+            _broker = broker;
+        }
+
+        public async Task<string?> AskAsync(Tools.PermissionPrompt prompt, CancellationToken ct)
+        {
+            // Park the decision before the frame goes out so a fast click can't race the wait.
+            var decision = _broker.WaitForDecisionAsync(prompt.RequestId, ct);
+            await _sse.WriteEventAsync("permission_request", new
+            {
+                requestId = prompt.RequestId,
+                agent = prompt.AgentName,
+                title = prompt.Title,
+                options = prompt.Options.Select(o => new { id = o.Id, name = o.Name, kind = o.Kind }),
+            }, ct).ConfigureAwait(false);
+            var choice = await decision.ConfigureAwait(false);
+            try
+            {
+                await _sse.WriteEventAsync("permission_resolved",
+                    new { requestId = prompt.RequestId, optionId = choice }, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch { /* client gone — the decision still stands */ }
+            return choice;
         }
     }
 

@@ -152,13 +152,32 @@ public sealed class AcpAgentConfig
     public bool Enabled { get; set; } = true;
 
     /// <summary>
-    /// When the agent asks permission for a tool call (session/request_permission): true picks
-    /// the first allow option, false picks a reject option (or cancels). There is no one to ask
-    /// interactively — the delegation runs inside another agent's turn — so this is a standing
-    /// policy, not a prompt. Default deny: granting an external agent write/execute rights
-    /// should be a deliberate choice.
+    /// Wire protocol the child speaks: <c>acp</c> (default — Agent Client Protocol) or
+    /// <c>codex-app-server</c> (Codex's JSON-RPC dialect: thread/turn/item, JSONL on stdio).
     /// </summary>
-    public bool AutoGrantPermissions { get; set; }
+    public string Protocol { get; set; } = "acp";
+
+    /// <summary>
+    /// What to do when the agent asks permission for a tool call:
+    /// <c>deny</c> (default) — pick a reject option; <c>allow</c> — pick an allow option;
+    /// <c>ask</c> — forward the request to whoever is driving the job (the web UI's stream, or
+    /// the editor above an agent-side ACP session) and use their answer, falling back to deny
+    /// when nobody is driving or nobody answers within <see cref="PermissionTimeoutSeconds"/>.
+    /// Default deny: granting an external agent write/execute rights should be deliberate.
+    /// </summary>
+    public string PermissionPolicy { get; set; } = "deny";
+
+    /// <summary>How long an <c>ask</c> waits for a human before falling back to deny.</summary>
+    public int PermissionTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>codex-app-server only: the <c>sandbox</c> passed to thread/start (e.g.
+    /// <c>readOnly</c>, <c>workspaceWrite</c>, <c>dangerFullAccess</c>). Pass-through string so
+    /// new values need no code change. Empty = let codex default.</summary>
+    public string CodexSandbox { get; set; } = "workspaceWrite";
+
+    /// <summary>codex-app-server only: the <c>approvalPolicy</c> passed to thread/start (e.g.
+    /// <c>untrusted</c>, <c>onRequest</c>, <c>never</c>). Empty = let codex default.</summary>
+    public string CodexApprovalPolicy { get; set; } = "";
 
     /// <summary>Pooled connection is dropped after this long unused. The next call respawns.</summary>
     public int IdleTimeoutSeconds { get; set; } = 300;
