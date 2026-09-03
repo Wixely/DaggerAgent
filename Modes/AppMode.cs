@@ -7,4 +7,5 @@ public enum AppMode
     Service,
     WindowsService,
     Acp,
+    Banter,
 }

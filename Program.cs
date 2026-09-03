@@ -225,7 +225,12 @@ public static class Program
                 e.SetObserved();
             };
 
-            await mcpHost.StartAsync(lifetime.ApplicationStopping).ConfigureAwait(false);
+            // Enrolment (`dagger banter --enrol <code>`) is a one-shot exchange with the Banter
+            // server; spinning up MCP servers for it would just be noise between the operator
+            // and the fingerprint they are trying to read.
+            var skipMcp = mode == AppMode.Banter && BanterRunner.IsEnrolInvocation(args);
+            if (!skipMcp)
+                await mcpHost.StartAsync(lifetime.ApplicationStopping).ConfigureAwait(false);
 
             try
             {
@@ -234,6 +239,7 @@ public static class Program
                     AppMode.Interactive => await app.Services.GetRequiredService<InteractiveRunner>().RunAsync(lifetime.ApplicationStopping).ConfigureAwait(false),
                     AppMode.Cli => await app.Services.GetRequiredService<CliRunner>().RunAsync(args, lifetime.ApplicationStopping).ConfigureAwait(false),
                     AppMode.Acp => await app.Services.GetRequiredService<AcpRunner>().RunAsync(lifetime.ApplicationStopping).ConfigureAwait(false),
+                    AppMode.Banter => await app.Services.GetRequiredService<BanterRunner>().RunAsync(args, lifetime.ApplicationStopping).ConfigureAwait(false),
                     _ => 1,
                 };
                 Log.Information("Runner returned (mode={Mode}, exitCode={ExitCode})", mode, exitCode);
@@ -271,6 +277,7 @@ public static class Program
         builder.Services.Configure<PricingOptions>(builder.Configuration.GetSection(PricingOptions.SectionName));
         builder.Services.Configure<MemoryOptions>(builder.Configuration.GetSection(MemoryOptions.SectionName));
         builder.Services.Configure<TriggerOptions>(builder.Configuration.GetSection(TriggerOptions.SectionName));
+        builder.Services.Configure<BanterOptions>(builder.Configuration.GetSection(BanterOptions.SectionName));
 
         builder.Services.AddSingleton<ChatClientFactory>();
         builder.Services.AddSingleton<EmbeddingClientFactory>();
@@ -313,6 +320,7 @@ public static class Program
         builder.Services.AddSingleton<InteractiveRunner>();
         builder.Services.AddSingleton<CliRunner>();
         builder.Services.AddSingleton<AcpRunner>();
+        builder.Services.AddSingleton<BanterRunner>();
 
         builder.Services.AddSingleton<TriggerStateStore>();
         // Register as a singleton AND a hosted service via the same instance — the singleton
