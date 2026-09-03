@@ -43,6 +43,9 @@
          feed (see nuget.config). Requires a GitHub token with read:packages in
          GITHUB_PACKAGES_TOKEN to restore. -->
     <PackageReference Include="AgentClientProtocol" Version="0.2.0" />
+    <!-- Banter agent SDK from Wixely/Banter, same GitHub Packages feed as the ACP fork.
+         Pulls Banter.Client.Core / Banter.Core / Banter.Protocol behind it, in lockstep. -->
+    <PackageReference Include="Banter.Agents.Sdk" Version="0.1.0" />
     <PackageReference Include="DiffPlex" Version="1.9.0" />
     <!-- Direct pin, not used directly: Microsoft.ML.Tokenizers.Data.O200kBase 2.0.0 hard-pins
          Microsoft.Bcl.Memory 9.0.4, which carries GHSA-73j8-2gch-69rq (.NET DoS, affects
@@ -66,6 +69,8 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageReference Include="Spectre.Console" Version="0.55.2" />
+    <!-- DPAPI wrapping for the Banter agent key at rest on Windows (BanterKeyStore). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
     <PackageReference Include="System.CommandLine" Version="3.0.0-preview.4.26230.115" />
   </ItemGroup>
 

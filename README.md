@@ -1,6 +1,6 @@
 # DaggerAgent
 
-A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs in three modes — interactive REPL, one-shot CLI, and HTTP service — and is deployable as a Windows Service or a Docker container.
+A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs as an interactive REPL, a one-shot CLI, an HTTP service, an ACP agent, or a [Banter](https://github.com/Wixely/Banter) room agent — and is deployable as a Windows Service or a Docker container.
 
 ![The DaggerAgent web UI: a job transcript with inline tool calls, the composer, and the tool catalogue.](docs/web-ui.png)
 
@@ -8,7 +8,7 @@ A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs in thr
 
 ## Features
 
-- **Three modes**: interactive REPL, one-shot CLI, HTTP service (Kestrel).
+- **Modes**: interactive REPL, one-shot CLI, HTTP service (Kestrel), ACP (JSON-RPC over stdio for editors), and [Banter mode](#banter-mode) — DaggerAgent as an agent in a Banter chat room, with one-time-code enrolment and key-backed identity.
 - **Multi-protocol upstream client**: `OpenAI` (OpenAI itself, Azure OpenAI, LM Studio, vLLM, any OpenAI-compatible endpoint) or `Ollama` (native `/api/chat` via OllamaSharp) — pick with `OpenAI:Provider` in config. Same code, swappable transport.
 - **MCP client**: connects to any number of MCP servers over HTTP (streamable-HTTP transport) **or** stdio (child process); their tools are surfaced to the LLM alongside the built-in tools. See [MCP servers](#mcp-servers).
 - **Built-in tools**:
@@ -110,6 +110,60 @@ If both `Url` and `Command` are set, `Url` wins.
 ```
 
 Tool names are surfaced to the LLM as `mcp.{Server-Name}.{tool}`; e.g. the filesystem server above would offer `mcp.fs.read_file`, `mcp.fs.list_directory`, etc.
+
+## Banter mode
+
+`dagger banter` runs DaggerAgent as an agent inside a [Banter](https://github.com/Wixely/Banter)
+room server: it logs in as an ordinary Banter user, joins rooms, and answers with its own LLM/tool
+loop — tools, sub-agents, job persistence and all. The SDK decides *when* to speak (delegation,
+@mentions, egress rules); DaggerAgent decides *what* to say. Each room holds its own conversation.
+
+### Enrolling (recommended)
+
+An operator creates the agent in the Banter desktop client's **agents page** and is handed a
+one-time enrolment code. Redeem it once, on the machine that will run the agent:
+
+```bash
+dagger banter --enrol banter-enrol-XXXXXXXXXXXXXXXXXXXXXXXXXXX --server tcp://host:7770
+```
+
+This generates a P-256 keypair locally, sends only the public half, and keeps the private key at
+`Banter:KeyFile` (default `banter.key` beside the executable — **DPAPI-protected for the current
+user on Windows**, user-only file permissions elsewhere). It prints the identity and its **key
+fingerprint** — how an operator tells one machine from another — and exits. The code is spent
+either way. After that the agent logs in by signing a server-chosen nonce: the credential never
+travels, a captured login cannot be replayed, and deleting or reissuing the agent server-side
+revokes it immediately.
+
+An existing key file is never overwritten — reissuing a key is an explicit move-aside, because the
+server still holds the public half and nothing can reproduce the private one. A truncated or
+foreign key file is reported as itself before connecting, not as "invalid credentials".
+
+### Running
+
+```bash
+dagger banter                       # settings from the Banter config section
+dagger banter --user scribe --rooms "#main,#dev"
+```
+
+```jsonc
+{
+  "Banter": {
+    "Server": "tcp://127.0.0.1:7770",
+    "User": "dagger",
+    "KeyFile": "banter.key",       // from --enrol; or set Password for the legacy route
+    "Rooms": [ "#main" ],
+    "Locality": "local",           // "frontier" if this DaggerAgent drives a hosted API
+    "Clearance": "sensitive",      // public | internal | sensitive
+    "Skills": [ "code", "tools" ], // what the room's delegator routes on
+    "Model": "",                   // empty = OpenAI:DefaultModel
+    "SystemPrompt": ""             // empty = Agent prompt + a group-chat addendum
+  }
+}
+```
+
+A configured `Password` still works for an agent that has one, but is refused when a key file also
+exists — whichever silently won, the other would be the stale credential nobody noticed.
 
 ## Source-control triggers
 

@@ -13,6 +13,8 @@ logs/
 data/
 
 # Local secrets / overrides
+*.key
+banter.key
 appsettings.Development.json
 appsettings.Local.json
 appsettings.*.Local.json
