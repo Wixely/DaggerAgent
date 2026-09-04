@@ -141,7 +141,7 @@ foreign key file is reported as itself before connecting, not as "invalid creden
 
 ### Managing it from the web UI
 
-In service mode (`dagger serve`) the same connection is managed from the web UI's **Bntr** tab —
+In service mode (`dagger serve`) the same connection is managed from the web UI's **Bant** tab —
 no second process. It shows the live connection (state, identity, rooms, key fingerprint, last
 error) with **Connect** / **Disconnect** buttons, a box to paste an enrolment code into (the
 enrolled nick and fingerprint come back, and the config is updated to match), and the full
