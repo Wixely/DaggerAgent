@@ -139,7 +139,18 @@ An existing key file is never overwritten — reissuing a key is an explicit mov
 server still holds the public half and nothing can reproduce the private one. A truncated or
 foreign key file is reported as itself before connecting, not as "invalid credentials".
 
-### Running
+### Managing it from the web UI
+
+In service mode (`dagger serve`) the same connection is managed from the web UI's **Bntr** tab —
+no second process. It shows the live connection (state, identity, rooms, key fingerprint, last
+error) with **Connect** / **Disconnect** buttons, a box to paste an enrolment code into (the
+enrolled nick and fingerprint come back, and the config is updated to match), and the full
+config section — server, rooms, LLM endpoint + model for room turns, routing attributes,
+auto-connect on service start. Edits persist to `runtime-config.json` and apply on the next
+connect. Enrolment and connection state are also scriptable at `/agent/banter`
+(`GET`, `POST /config`, `POST /enrol`, `POST /connect`, `POST /disconnect`).
+
+### Running standalone
 
 ```bash
 dagger banter                       # settings from the Banter config section
@@ -156,8 +167,10 @@ dagger banter --user scribe --rooms "#main,#dev"
     "Locality": "local",           // "frontier" if this DaggerAgent drives a hosted API
     "Clearance": "sensitive",      // public | internal | sensitive
     "Skills": [ "code", "tools" ], // what the room's delegator routes on
-    "Model": "",                   // empty = OpenAI:DefaultModel
-    "SystemPrompt": ""             // empty = Agent prompt + a group-chat addendum
+    "EndpointId": "",              // LLM endpoint for room turns; empty = active default
+    "Model": "",                   // empty = the endpoint's default model
+    "SystemPrompt": "",            // empty = Agent prompt + a group-chat addendum
+    "AutoConnect": false           // service mode: connect at startup
   }
 }
 ```

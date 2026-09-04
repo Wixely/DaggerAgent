@@ -117,6 +117,7 @@ const els = {
     endpoints: $("tab-endpoints"),
     mcp: $("tab-mcp"),
     triggers: $("tab-triggers"),
+    banter: $("tab-banter"),
     tools: $("tab-tools"),
     commands: $("tab-commands"),
     settings: $("tab-settings"),
@@ -130,6 +131,9 @@ const els = {
   triggersOptionsForm: $("triggers-options-form"),
   triggersSourcesList: $("triggers-sources-list"),
   btnTriggerAdd: $("btn-trigger-add"),
+  banterStatus: $("banter-status"),
+  banterEnrol: $("banter-enrol"),
+  banterConfigForm: $("banter-config-form"),
   toolsList: $("tools-list"),
   commandsList: $("commands-list"),
   settingsForm: $("settings-form"),
@@ -270,6 +274,7 @@ function switchTab(name) {
   if (name === "endpoints") loadEndpoints();
   if (name === "mcp") loadMcpConfig();
   if (name === "triggers") loadTriggers();
+  if (name === "banter") loadBanter();
   if (name === "plan") loadPlan();
   if (name === "writes") loadPendingWrites();
   revealAdvancedIfNeeded();
@@ -278,7 +283,7 @@ function switchTab(name) {
 
 // The five configuration tabs fold behind Advanced under 780px. Nothing here does
 // anything at desktop width: the class is inert and the toggle is display:none.
-const ADVANCED_TABS = new Set(["endpoints", "mcp", "triggers", "tools", "commands"]);
+const ADVANCED_TABS = new Set(["endpoints", "mcp", "triggers", "banter", "tools", "commands"]);
 
 function activeTabName() {
   const btn = Array.from(els.tabs).find((b) => b.classList.contains("active"));
@@ -1053,6 +1058,275 @@ function addTriggerSourceForm() {
   const wrapper = el("div", { class: "endpoint-card" });
   wrapper.appendChild(renderTriggerSourceForm(draft, true));
   c.prepend(wrapper);
+}
+
+// ───────────────────────────── banter (room-server connection) ─────────────────────────────
+//
+// Manages the service-hosted Banter connection: live status with connect/disconnect, the
+// enrolment box (paste a one-time code, get an identity and a key fingerprint back), and the
+// config section that persists into runtime-config.json. `dagger banter` remains the
+// standalone equivalent; this tab is the same thing without a second process.
+
+async function loadBanter() {
+  try {
+    state.banter = await api("/banter");
+    // The endpoint picker needs the endpoints list; fetched here rather than relying on the
+    // Endp tab having been opened first.
+    try { state.banterEndpoints = (await api("/endpoints")).items || []; }
+    catch { state.banterEndpoints = []; }
+    renderBanterStatus();
+    renderBanterEnrol();
+    renderBanterConfig();
+  } catch (e) { console.warn("banter load failed", e); }
+}
+
+function renderBanterStatus() {
+  const c = els.banterStatus;
+  c.replaceChildren();
+  const st = (state.banter && state.banter.status) || {};
+  const cfg = (state.banter && state.banter.config) || {};
+  const connected = st.state === "connected";
+
+  const card = el("div", { class: "endpoint-card" });
+  const badge = el("span", {
+    class: `badge ${connected ? "bg-success" : st.state === "connecting" ? "bg-warning" : "bg-secondary"}`,
+  }, st.state || "disconnected");
+  card.appendChild(el("div", { class: "endpoint-head" },
+    el("span", { class: "endpoint-name" }, "Banter connection"),
+    badge));
+
+  const meta = [];
+  if (connected) {
+    meta.push(`${st.user} on ${st.server}`);
+    meta.push(`rooms: ${(st.rooms || []).join(", ")}`);
+    if (st.model) meta.push(`model: ${st.model}`);
+    meta.push(st.authMode === "key" ? `key ${st.keyFingerprint}` : "password login");
+  } else {
+    meta.push(`would connect as ${cfg.user} to ${cfg.server}`);
+    if (cfg.keyPresent) meta.push(cfg.keyFingerprint ? `key ${cfg.keyFingerprint}` : "key file present but unusable");
+    else if (cfg.hasPassword) meta.push("password login (consider enrolling)");
+    else meta.push("no credential yet — enrol below");
+  }
+  card.appendChild(el("div", { class: "endpoint-meta" }, meta.join(" · ")));
+
+  if (st.lastError) {
+    card.appendChild(el("div", { class: "endpoint-meta text-danger" }, `last error: ${st.lastError}`));
+  }
+
+  const actions = el("div", { class: "endpoint-actions" });
+  const mainBtn = el("button", {
+    class: `btn btn-sm ${connected ? "btn-outline-danger" : "btn-primary"}`,
+    type: "button",
+  }, connected ? "Disconnect" : "Connect");
+  mainBtn.addEventListener("click", async () => {
+    mainBtn.disabled = true;
+    try {
+      const r = await api(`/banter/${connected ? "disconnect" : "connect"}`, { method: "POST" });
+      if (!connected && !r.ok) showToast("Connect failed: " + (r.error || "unknown error"));
+    } catch (e) { showToast((connected ? "Disconnect" : "Connect") + " failed: " + e.message); }
+    await loadBanter();
+  });
+  actions.appendChild(mainBtn);
+  actions.appendChild(el("button", {
+    class: "btn btn-sm btn-outline-secondary", type: "button",
+    onclick: () => loadBanter(),
+  }, "↻ Refresh"));
+  card.appendChild(actions);
+  c.appendChild(card);
+}
+
+function renderBanterEnrol() {
+  const c = els.banterEnrol;
+  c.replaceChildren();
+  const cfg = (state.banter && state.banter.config) || {};
+
+  const card = el("div", { class: "endpoint-card" });
+  card.appendChild(el("div", { class: "endpoint-head" },
+    el("span", { class: "endpoint-name" }, "Enrol this machine")));
+
+  if (cfg.keyPresent) {
+    card.appendChild(el("div", { class: "endpoint-meta" },
+      `A key already exists at ${cfg.keyFile}` +
+      (cfg.keyFingerprint ? ` (${cfg.keyFingerprint})` : "") +
+      ". Enrolling again needs that file moved aside first — overwriting it would strand the identity it belongs to."));
+    c.appendChild(card);
+    return;
+  }
+
+  card.appendChild(el("div", { class: "endpoint-meta" },
+    "Paste the one-time code from the Banter client's agents page. This machine makes its own key, " +
+    "sends only the public half, and keeps the private half at the configured key path."));
+
+  const codeId = fieldId("bnt");
+  const wrap = el("div", { class: "endpoint-form", style: "display:flex;" });
+  const codeWrap = el("div", {});
+  codeWrap.appendChild(el("label", { for: codeId }, "Enrolment code"));
+  const codeInput = el("input", {
+    class: "form-control form-control-sm", id: codeId,
+    placeholder: "banter-enrol-…", autocomplete: "off", spellcheck: "false",
+  });
+  codeWrap.appendChild(codeInput);
+  wrap.appendChild(codeWrap);
+
+  const enrolBtn = el("button", { class: "btn btn-sm btn-primary", type: "button" }, "Enrol");
+  const result = el("div", { class: "endpoint-meta" });
+  enrolBtn.addEventListener("click", async () => {
+    const code = codeInput.value.trim();
+    if (!code) { showToast("Paste the enrolment code first."); return; }
+    enrolBtn.disabled = true;
+    enrolBtn.textContent = "Enrolling…";
+    try {
+      const r = await api("/banter/enrol", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      result.classList.remove("text-danger");
+      result.textContent =
+        `Enrolled as '${r.nick}' — fingerprint ${r.fingerprint}. The code is spent; ` +
+        `the key stays on this machine${r.dpapiProtected ? " (DPAPI-protected)" : ""}.`;
+      showToast(`Enrolled as ${r.nick}`);
+      await loadBanter();
+    } catch (e) {
+      result.classList.add("text-danger");
+      result.textContent = "Enrolment failed: " + e.message;
+      enrolBtn.disabled = false;
+      enrolBtn.textContent = "Enrol";
+    }
+  });
+
+  wrap.appendChild(el("div", { class: "endpoint-actions" }, enrolBtn));
+  card.appendChild(wrap);
+  card.appendChild(result);
+  c.appendChild(card);
+}
+
+function renderBanterConfig() {
+  const form = els.banterConfigForm;
+  form.replaceChildren();
+  const cfg = (state.banter && state.banter.config) || {};
+  const connected = state.banter && state.banter.status && state.banter.status.state === "connected";
+
+  const field = (label, attrs) => {
+    const a = attrs || {};
+    const id = fieldId("bnf");
+    if (a.type === "checkbox") {
+      const wrap = el("div", { class: "form-check form-switch" });
+      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
+      wrap.appendChild(inp);
+      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
+      return { wrap, inp };
+    }
+    const wrap = el("div", {});
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
+    wrap.appendChild(inp);
+    return { wrap, inp };
+  };
+  const selectField = (label, options, value) => {
+    const id = fieldId("bnf");
+    const wrap = el("div", {});
+    wrap.appendChild(el("label", { for: id }, label));
+    const inp = el("select", { class: "form-select form-select-sm", id });
+    for (const o of options) {
+      const opt = el("option", { value: o }, o);
+      if (o === value) opt.selected = true;
+      inp.appendChild(opt);
+    }
+    wrap.appendChild(inp);
+    return { wrap, inp };
+  };
+
+  form.appendChild(el("div", { class: "endpoint-head" },
+    el("span", { class: "endpoint-name" }, "Configuration")));
+
+  const serverF = field("Server", { value: cfg.server ?? "tcp://127.0.0.1:7770" });
+  const userF = field("User", { value: cfg.user ?? "dagger" });
+  const roomsF = field("Rooms (comma-separated)", { value: (cfg.rooms || []).join(", "), placeholder: "#main" });
+  const keyFileF = field("Key file path", { value: cfg.keyFile ?? "banter.key" });
+  const passF = field(cfg.hasPassword ? "Password (set — leave blank to keep)" : "Password (blank = key login)", {
+    type: "password", autocomplete: "new-password", placeholder: cfg.hasPassword ? "••••••" : "",
+  });
+  const endpointId = fieldId("bnf");
+  const endpointWrap = el("div", {});
+  endpointWrap.appendChild(el("label", { for: endpointId }, "LLM endpoint"));
+  const endpointSel = el("select", { class: "form-select form-select-sm", id: endpointId });
+  endpointSel.appendChild(el("option", { value: "" }, "(use active default)"));
+  for (const ep of state.banterEndpoints || []) {
+    const opt = el("option", { value: ep.id }, `${ep.displayName || ep.id} (${ep.id})`);
+    if (ep.id === cfg.endpointId) opt.selected = true;
+    endpointSel.appendChild(opt);
+  }
+  endpointWrap.appendChild(endpointSel);
+  const modelF = field("Model (blank = endpoint default)", { value: cfg.model ?? "" });
+  const skillsF = field("Skills (comma-separated)", { value: (cfg.skills || []).join(", "), placeholder: "code, tools" });
+  const localityF = selectField("Locality", ["local", "frontier"], cfg.locality ?? "local");
+  const clearanceF = selectField("Clearance", ["public", "internal", "sensitive"], cfg.clearance ?? "sensitive");
+  const costF = field("Cost tier (lower is cheaper)", { type: "number", value: cfg.costTier ?? 1, min: 0 });
+  const descF = field("Roster description (blank = auto)", { value: cfg.description ?? "" });
+  const answerAllF = field("Answer every message (mention-mode rooms only)", { type: "checkbox" });
+  answerAllF.inp.checked = !!cfg.respondToEveryMessage;
+  const delegatorF = field("Ask to be the room's delegator", { type: "checkbox" });
+  delegatorF.inp.checked = !!cfg.wantsDelegator;
+  const autoConnectF = field("Connect automatically when the service starts", { type: "checkbox" });
+  autoConnectF.inp.checked = !!cfg.autoConnect;
+
+  const promptId = fieldId("bnf");
+  const promptWrap = el("div", {});
+  promptWrap.appendChild(el("label", { for: promptId }, "System prompt (blank = agent prompt + group-chat addendum)"));
+  const promptArea = el("textarea", { class: "form-control form-control-sm", rows: 3, id: promptId });
+  promptArea.value = cfg.systemPrompt ?? "";
+  promptWrap.appendChild(promptArea);
+
+  form.appendChild(el("div", { class: "row-2" }, serverF.wrap, userF.wrap));
+  form.appendChild(roomsF.wrap);
+  form.appendChild(keyFileF.wrap);
+  form.appendChild(passF.wrap);
+  form.appendChild(el("div", { class: "row-2" }, endpointWrap, modelF.wrap));
+  form.appendChild(costF.wrap);
+  form.appendChild(skillsF.wrap);
+  form.appendChild(el("div", { class: "row-2" }, localityF.wrap, clearanceF.wrap));
+  form.appendChild(descF.wrap);
+  form.appendChild(answerAllF.wrap);
+  form.appendChild(delegatorF.wrap);
+  form.appendChild(autoConnectF.wrap);
+  form.appendChild(promptWrap);
+
+  const saveBtn = el("button", { type: "submit", class: "btn btn-sm btn-primary" }, "Save");
+  form.appendChild(el("div", { class: "endpoint-actions" }, saveBtn));
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const body = {
+      server: serverF.inp.value.trim(),
+      user: userF.inp.value.trim(),
+      rooms: roomsF.inp.value.split(",").map(s => s.trim()).filter(Boolean),
+      keyFile: keyFileF.inp.value.trim(),
+      endpointId: endpointSel.value,
+      model: modelF.inp.value,
+      skills: skillsF.inp.value.split(",").map(s => s.trim()).filter(Boolean),
+      locality: localityF.inp.value,
+      clearance: clearanceF.inp.value,
+      costTier: Number(costF.inp.value) || 1,
+      description: descF.inp.value,
+      respondToEveryMessage: answerAllF.inp.checked,
+      wantsDelegator: delegatorF.inp.checked,
+      autoConnect: autoConnectF.inp.checked,
+      systemPrompt: promptArea.value,
+    };
+    // A blank password box means "leave it alone" — typing sets it, and enrolment clears it.
+    if (passF.inp.value.length > 0) body.password = passF.inp.value;
+    try {
+      await api("/banter/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      showToast(connected
+        ? "Saved. Disconnect and reconnect to apply to the live connection."
+        : "Saved.");
+      await loadBanter();
+    } catch (e) { showToast("Save failed: " + e.message); }
+  });
 }
 
 async function loadTools() {

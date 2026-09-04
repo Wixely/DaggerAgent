@@ -361,6 +361,140 @@ public static class AgentUiEndpoints
             }, JsonOpts.Default);
         });
 
+        // ──────────────────────────── banter ────────────────────────────
+
+        // Config + live connection status in one GET, mirroring /triggers. The password never
+        // leaves the server (only hasPassword) and neither does the key — only its path,
+        // whether it is usable, and the public half's fingerprint.
+        group.MapGet("/banter", async (
+            IOptions<BanterOptions> banter,
+            BanterConnectionService connection,
+            CancellationToken ct) =>
+        {
+            var b = banter.Value;
+            var fingerprint = await Modes.BanterSetup.TryFingerprintAsync(b.KeyFile, ct).ConfigureAwait(false);
+            return Results.Json(new
+            {
+                config = new
+                {
+                    server = b.Server,
+                    user = b.User,
+                    hasPassword = b.Password.Length > 0,
+                    keyFile = b.KeyFile,
+                    keyPresent = File.Exists(b.KeyFile),
+                    keyFingerprint = fingerprint,
+                    rooms = b.Rooms,
+                    respondToEveryMessage = b.RespondToEveryMessage,
+                    locality = b.Locality,
+                    clearance = b.Clearance,
+                    skills = b.Skills,
+                    description = b.Description,
+                    costTier = b.CostTier,
+                    wantsDelegator = b.WantsDelegator,
+                    endpointId = b.EndpointId,
+                    model = b.Model,
+                    systemPrompt = b.SystemPrompt,
+                    autoConnect = b.AutoConnect,
+                },
+                status = connection.Status,
+            }, JsonOpts.Default);
+        });
+
+        // PATCH the config. Only fields present in the body are touched; password "" clears it
+        // (switching to the key route), any other value sets it. Changes apply to the NEXT
+        // connect — an existing connection keeps the options it was started with, which is why
+        // the UI says "disconnect and reconnect to apply".
+        group.MapPost("/banter/config", async (
+            BanterOptionsPatch patch,
+            IOptions<BanterOptions> banter,
+            RuntimeConfigStore store,
+            CancellationToken ct) =>
+        {
+            await store.MutateAsync(() =>
+            {
+                var b = banter.Value;
+                if (patch.Server is not null) b.Server = patch.Server.Trim();
+                if (patch.User is not null) b.User = patch.User.Trim();
+                if (patch.Password is not null) b.Password = patch.Password;
+                if (patch.KeyFile is not null) b.KeyFile = patch.KeyFile.Trim();
+                if (patch.Rooms is not null)
+                    b.Rooms = patch.Rooms.Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim()).ToList();
+                if (patch.RespondToEveryMessage is bool rem) b.RespondToEveryMessage = rem;
+                if (patch.Locality is not null) b.Locality = patch.Locality;
+                if (patch.Clearance is not null) b.Clearance = patch.Clearance;
+                if (patch.Skills is not null)
+                    b.Skills = patch.Skills.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
+                if (patch.Description is not null) b.Description = patch.Description;
+                if (patch.CostTier is int ctier && ctier >= 0) b.CostTier = ctier;
+                if (patch.WantsDelegator is bool wd) b.WantsDelegator = wd;
+                if (patch.EndpointId is not null) b.EndpointId = patch.EndpointId.Trim();
+                if (patch.Model is not null) b.Model = patch.Model.Trim();
+                if (patch.SystemPrompt is not null) b.SystemPrompt = patch.SystemPrompt;
+                if (patch.AutoConnect is bool ac) b.AutoConnect = ac;
+            }, ct).ConfigureAwait(false);
+            return Results.Json(new { ok = true }, JsonOpts.Default);
+        });
+
+        // Redeem a one-time enrolment code — the "field to paste the code into" from issue #9.
+        // Refuses to overwrite an existing key (it would strand that identity). On success the
+        // configured user is set to the enrolled nick and persisted, so Connect just works.
+        group.MapPost("/banter/enrol", async (
+            BanterEnrolBody body,
+            IOptions<BanterOptions> banter,
+            RuntimeConfigStore store,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Code))
+                return Results.BadRequest(new { error = "code required" });
+
+            var b = banter.Value;
+            var server = string.IsNullOrWhiteSpace(body.Server) ? b.Server : body.Server.Trim();
+            var keyPath = string.IsNullOrWhiteSpace(body.KeyFile) ? b.KeyFile : body.KeyFile.Trim();
+
+            try
+            {
+                var (identity, savedPath) = await Modes.BanterSetup
+                    .EnrolAsync(server, body.Code.Trim(), keyPath, ct)
+                    .ConfigureAwait(false);
+
+                await store.MutateAsync(() =>
+                {
+                    b.User = identity.Nick;
+                    b.KeyFile = keyPath;
+                    b.Server = server;
+                    // The enrolled key IS the credential now; a leftover password would be
+                    // refused at the next connect, so clear it here rather than surprise later.
+                    b.Password = "";
+                }, ct).ConfigureAwait(false);
+
+                return Results.Json(new
+                {
+                    nick = identity.Nick,
+                    fingerprint = identity.KeyFingerprint,
+                    rooms = identity.Rooms,
+                    keyPath = savedPath,
+                    dpapiProtected = OperatingSystem.IsWindows(),
+                }, JsonOpts.Default);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException
+                or System.Net.Sockets.SocketException or ArgumentException or UriFormatException)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
+        group.MapPost("/banter/connect", async (BanterConnectionService connection, CancellationToken ct) =>
+        {
+            var error = await connection.ConnectAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok = error is null, error, status = connection.Status }, JsonOpts.Default);
+        });
+
+        group.MapPost("/banter/disconnect", async (BanterConnectionService connection, CancellationToken ct) =>
+        {
+            var was = await connection.DisconnectAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok = true, wasConnected = was, status = connection.Status }, JsonOpts.Default);
+        });
+
         // ──────────────────────────── tools ────────────────────────────
 
         group.MapGet("/tools", (
@@ -739,6 +873,29 @@ internal sealed record McpServerPatch(
     string? WorkingDirectory = null,
     IReadOnlyDictionary<string, string>? EnvironmentVariables = null,
     bool? PassthroughToCli = null);
+
+internal sealed record BanterOptionsPatch(
+    string? Server = null,
+    string? User = null,
+    string? Password = null,
+    string? KeyFile = null,
+    IReadOnlyList<string>? Rooms = null,
+    bool? RespondToEveryMessage = null,
+    string? Locality = null,
+    string? Clearance = null,
+    IReadOnlyList<string>? Skills = null,
+    string? Description = null,
+    int? CostTier = null,
+    bool? WantsDelegator = null,
+    string? EndpointId = null,
+    string? Model = null,
+    string? SystemPrompt = null,
+    bool? AutoConnect = null);
+
+internal sealed record BanterEnrolBody(
+    string Code,
+    string? Server = null,
+    string? KeyFile = null);
 
 internal static class JsonOpts
 {

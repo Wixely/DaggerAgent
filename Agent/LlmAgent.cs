@@ -192,7 +192,11 @@ public sealed class LlmAgent
         var turnBudget = ResolveTurnBudget(state);
         var options = new ChatOptions
         {
-            ModelId = state.Model,
+            // Empty means "the endpoint's default decides" (a Banter room agent with no model
+            // override, for example). ChatClientFactory already substitutes the endpoint default
+            // into the transport client; an empty ModelId HERE would override that back to ""
+            // and the OpenAI serializer throws "Empty encoded value" on it.
+            ModelId = string.IsNullOrWhiteSpace(state.Model) ? null : state.Model,
             Tools = tools.Count > 0 ? tools : null,
             MaxOutputTokens = turnBudget.maxOutputTokens,
         };
@@ -330,7 +334,11 @@ public sealed class LlmAgent
 
         var options = new ChatOptions
         {
-            ModelId = state.Model,
+            // Empty means "the endpoint's default decides" (a Banter room agent with no model
+            // override, for example). ChatClientFactory already substitutes the endpoint default
+            // into the transport client; an empty ModelId HERE would override that back to ""
+            // and the OpenAI serializer throws "Empty encoded value" on it.
+            ModelId = string.IsNullOrWhiteSpace(state.Model) ? null : state.Model,
             Tools = tools.Count > 0 ? tools : null,
             MaxOutputTokens = ResolveTurnBudget(state).maxOutputTokens,
         };

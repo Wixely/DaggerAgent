@@ -130,6 +130,7 @@
         <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link active" data-tab="endpoints" type="button" role="tab" id="tab-btn-endpoints" aria-controls="tab-endpoints" aria-selected="true">Endp</button></li>
         <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="mcp" type="button" role="tab" id="tab-btn-mcp" aria-controls="tab-mcp" aria-selected="false" tabindex="-1">MCP</button></li>
         <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="triggers" type="button" role="tab" id="tab-btn-triggers" aria-controls="tab-triggers" aria-selected="false" tabindex="-1">Trig</button></li>
+        <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="banter" type="button" role="tab" id="tab-btn-banter" aria-controls="tab-banter" aria-selected="false" tabindex="-1">Bntr</button></li>
         <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="tools" type="button" role="tab" id="tab-btn-tools" aria-controls="tab-tools" aria-selected="false" tabindex="-1">Tools</button></li>
         <li class="nav-item nav-item-advanced" role="presentation"><button class="nav-link" data-tab="commands" type="button" role="tab" id="tab-btn-commands" aria-controls="tab-commands" aria-selected="false" tabindex="-1">Cmds</button></li>
         <li class="nav-item" role="presentation"><button class="nav-link" data-tab="settings" type="button" role="tab" id="tab-btn-settings" aria-controls="tab-settings" aria-selected="false" tabindex="-1">Set</button></li>
@@ -159,6 +160,11 @@
             <button id="btn-trigger-add" class="btn btn-sm btn-outline-primary" type="button">+ Add source</button>
           </div>
           <div id="triggers-sources-list" class="endpoints-list"></div>
+        </div>
+        <div id="tab-banter" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-banter" tabindex="0">
+          <div id="banter-status" class="endpoints-list"></div>
+          <div id="banter-enrol" class="endpoints-list"></div>
+          <form id="banter-config-form" class="endpoint-form banter-config-form"></form>
         </div>
         <div id="tab-tools" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-tools" tabindex="0">
           <div id="tools-list" class="tools-list"></div>

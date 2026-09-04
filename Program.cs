@@ -321,6 +321,10 @@ public static class Program
         builder.Services.AddSingleton<CliRunner>();
         builder.Services.AddSingleton<AcpRunner>();
         builder.Services.AddSingleton<BanterRunner>();
+        // The web-UI-managed Banter connection (service mode only in practice: hosted services
+        // never start in the CLI/interactive/banter modes, which skip app.RunAsync()).
+        builder.Services.AddSingleton<BanterConnectionService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<BanterConnectionService>());
 
         builder.Services.AddSingleton<TriggerStateStore>();
         // Register as a singleton AND a hosted service via the same instance — the singleton

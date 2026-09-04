@@ -30,6 +30,7 @@ public sealed class RuntimeConfigStore
     private readonly McpOptions _mcp;
     private readonly TriggerOptions _triggers;
     private readonly ToolsOptions _tools;
+    private readonly BanterOptions _banter;
     private readonly HostLaunchInfo _launchInfo;
     private readonly ILogger<RuntimeConfigStore> _log;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
@@ -45,6 +46,7 @@ public sealed class RuntimeConfigStore
         IOptions<McpOptions> mcp,
         IOptions<TriggerOptions> triggers,
         IOptions<ToolsOptions> tools,
+        IOptions<BanterOptions> banter,
         HostLaunchInfo launchInfo,
         ILogger<RuntimeConfigStore> log)
     {
@@ -52,6 +54,7 @@ public sealed class RuntimeConfigStore
         _mcp = mcp.Value;
         _triggers = triggers.Value;
         _tools = tools.Value;
+        _banter = banter.Value;
         _launchInfo = launchInfo;
         _log = log;
     }
@@ -132,6 +135,29 @@ public sealed class RuntimeConfigStore
                 if (tp.MaxToolResultChars is int mtrc) _tools.MaxToolResultChars = mtrc;
             }
 
+            // Banter section — every field the UI's Banter tab edits. Nullable, so an absent one
+            // leaves the appsettings baseline untouched. The password persists like MCP
+            // AuthHeaders do; the key never appears here — only its path.
+            if (snapshot.Banter is { } bp)
+            {
+                if (bp.Server is not null) _banter.Server = bp.Server;
+                if (bp.User is not null) _banter.User = bp.User;
+                if (bp.Password is not null) _banter.Password = bp.Password;
+                if (bp.KeyFile is not null) _banter.KeyFile = bp.KeyFile;
+                if (bp.Rooms is not null) _banter.Rooms = bp.Rooms.ToList();
+                if (bp.RespondToEveryMessage is bool rem) _banter.RespondToEveryMessage = rem;
+                if (bp.Locality is not null) _banter.Locality = bp.Locality;
+                if (bp.Clearance is not null) _banter.Clearance = bp.Clearance;
+                if (bp.Skills is not null) _banter.Skills = bp.Skills.ToList();
+                if (bp.Description is not null) _banter.Description = bp.Description;
+                if (bp.CostTier is int ctier) _banter.CostTier = ctier;
+                if (bp.WantsDelegator is bool wd) _banter.WantsDelegator = wd;
+                if (bp.EndpointId is not null) _banter.EndpointId = bp.EndpointId;
+                if (bp.Model is not null) _banter.Model = bp.Model;
+                if (bp.SystemPrompt is not null) _banter.SystemPrompt = bp.SystemPrompt;
+                if (bp.AutoConnect is bool ac) _banter.AutoConnect = ac;
+            }
+
             _log.LogInformation(
                 "Loaded runtime config from {Path}: {EndpointCount} endpoint(s), {McpCount} mcp server(s), {TriggerCount} trigger source(s), cwd={Cwd}",
                 FilePath, _endpoints.Items.Count, _mcp.Servers.Count, _triggers.Sources.Count,
@@ -183,6 +209,25 @@ public sealed class RuntimeConfigStore
                     ShellTimeoutSeconds = _tools.ShellTimeoutSeconds,
                     ReadFileSummaryThresholdBytes = _tools.ReadFileSummaryThresholdBytes,
                     MaxToolResultChars = _tools.MaxToolResultChars,
+                },
+                Banter = new BanterPersisted
+                {
+                    Server = _banter.Server,
+                    User = _banter.User,
+                    Password = _banter.Password,
+                    KeyFile = _banter.KeyFile,
+                    Rooms = _banter.Rooms.ToList(),
+                    RespondToEveryMessage = _banter.RespondToEveryMessage,
+                    Locality = _banter.Locality,
+                    Clearance = _banter.Clearance,
+                    Skills = _banter.Skills.ToList(),
+                    Description = _banter.Description,
+                    CostTier = _banter.CostTier,
+                    WantsDelegator = _banter.WantsDelegator,
+                    EndpointId = _banter.EndpointId,
+                    Model = _banter.Model,
+                    SystemPrompt = _banter.SystemPrompt,
+                    AutoConnect = _banter.AutoConnect,
                 },
             };
 
@@ -237,6 +282,32 @@ public sealed class RuntimeConfigStore
         /// (kept session-scoped — see <see cref="LoadAsync"/>).
         /// </summary>
         public ToolsPersisted? Tools { get; set; }
+
+        /// <summary>
+        /// The Banter-mode section, as edited from the web UI's Banter tab. Nullable fields so an
+        /// absent one leaves the appsettings baseline untouched on load.
+        /// </summary>
+        public BanterPersisted? Banter { get; set; }
+    }
+
+    private sealed class BanterPersisted
+    {
+        public string? Server { get; set; }
+        public string? User { get; set; }
+        public string? Password { get; set; }
+        public string? KeyFile { get; set; }
+        public List<string>? Rooms { get; set; }
+        public bool? RespondToEveryMessage { get; set; }
+        public string? Locality { get; set; }
+        public string? Clearance { get; set; }
+        public List<string>? Skills { get; set; }
+        public string? Description { get; set; }
+        public int? CostTier { get; set; }
+        public bool? WantsDelegator { get; set; }
+        public string? EndpointId { get; set; }
+        public string? Model { get; set; }
+        public string? SystemPrompt { get; set; }
+        public bool? AutoConnect { get; set; }
     }
 
     private sealed class ToolsPersisted
