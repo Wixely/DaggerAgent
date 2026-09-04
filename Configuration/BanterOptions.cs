@@ -64,7 +64,13 @@ public sealed class BanterOptions
     /// <summary>Ask to be the room's delegator. Only honoured for agents that are eligible.</summary>
     public bool WantsDelegator { get; set; }
 
-    /// <summary>Model for room turns. Empty falls back to OpenAI.DefaultModel.</summary>
+    /// <summary>
+    /// LLM endpoint id for room turns (from the Endpoints list). Empty uses the active default
+    /// endpoint — the same resolution every other job gets.
+    /// </summary>
+    public string EndpointId { get; set; } = "";
+
+    /// <summary>Model for room turns. Empty lets the chosen endpoint's default decide.</summary>
     public string Model { get; set; } = "";
 
     /// <summary>
@@ -72,4 +78,11 @@ public sealed class BanterOptions
     /// a short group-chat addendum, so the agent knows replies land in a shared room.
     /// </summary>
     public string SystemPrompt { get; set; } = "";
+
+    /// <summary>
+    /// In service mode (`dagger serve`): connect to the Banter server automatically at startup.
+    /// Off by default — the connection is managed from the web UI's Banter tab, and this is the
+    /// "and keep it that way across restarts" switch.
+    /// </summary>
+    public bool AutoConnect { get; set; }
 }

@@ -15,6 +15,7 @@ public sealed class DaggerBanterAgent : BanterAgent
 {
     private readonly LlmAgent _agent;
     private readonly string _model;
+    private readonly string? _endpointId;
     private readonly string? _systemPrompt;
     private readonly ILogger _log;
 
@@ -25,12 +26,16 @@ public sealed class DaggerBanterAgent : BanterAgent
     /// </summary>
     private readonly Dictionary<string, ConversationState> _states = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <param name="model">Model for room turns; empty lets the endpoint's default decide.</param>
+    /// <param name="endpointId">LLM endpoint id; null/empty uses the active default endpoint.</param>
     public DaggerBanterAgent(
-        BanterAgentOptions options, LlmAgent agent, string model, string? systemPrompt, ILogger log)
+        BanterAgentOptions options, LlmAgent agent, string model, string? endpointId,
+        string? systemPrompt, ILogger log)
         : base(options)
     {
         _agent = agent;
         _model = model;
+        _endpointId = string.IsNullOrWhiteSpace(endpointId) ? null : endpointId;
         _systemPrompt = systemPrompt;
         _log = log;
     }
@@ -42,6 +47,7 @@ public sealed class DaggerBanterAgent : BanterAgent
         if (!_states.TryGetValue(room, out var state))
         {
             _states[room] = state = _agent.CreateState(_model, _systemPrompt);
+            state.EndpointId = _endpointId;
         }
 
         _log.LogInformation("Banter turn: room={Room} sender={Sender} jobId={JobId}", room, sender, state.Id);

@@ -1,7 +1,3 @@
-using System.Security.Cryptography;
-using Banter.Agents.Sdk;
-using Banter.Client.Core;
-using Banter.Protocol;
 using Banter.Protocol.Transport;
 using Daggeragent.Agent;
 using Daggeragent.Configuration;
@@ -78,26 +74,13 @@ public sealed class BanterRunner
 
     private async Task<int> EnrolAsync(string server, string code, string keyPath, CancellationToken cancellationToken)
     {
-        if (File.Exists(keyPath))
-        {
-            // Overwriting would strand the identity that key belongs to: the server still has
-            // its public half and nothing else can produce the private one.
-            Console.Error.WriteLine(
-                $"error: {Path.GetFullPath(keyPath)} already exists. Move it aside first if you mean to replace it.");
-            return 1;
-        }
-
         try
         {
-            var endpoint = new Uri(server);
-            var (identity, privateKey) = await AgentEnrolment
-                .EnrolAsync(BanterTransports.Client(endpoint), endpoint, code, cancellationToken)
+            var (identity, savedPath) = await BanterSetup.EnrolAsync(server, code, keyPath, cancellationToken)
                 .ConfigureAwait(false);
 
-            await BanterKeyStore.SaveAsync(keyPath, privateKey, cancellationToken).ConfigureAwait(false);
-
             Console.WriteLine($"Enrolled as '{identity.Nick}'.");
-            Console.WriteLine($"  key        {Path.GetFullPath(keyPath)}" +
+            Console.WriteLine($"  key        {savedPath}" +
                               (OperatingSystem.IsWindows() ? " (DPAPI-protected for this Windows user)" : ""));
             Console.WriteLine($"  identifies {identity.KeyFingerprint}");
             Console.WriteLine($"  rooms      {string.Join(", ", identity.Rooms)}");
@@ -125,10 +108,9 @@ public sealed class BanterRunner
             ?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             ?? (options.Rooms.Count > 0 ? options.Rooms.ToArray() : ["#main"]);
 
-        // Exactly one route. A password AND a key is refused rather than ranked: whichever
-        // silently won, the other would be the stale credential nobody noticed. Without an
-        // explicit flag, a configured password only wins while no key file exists — the enrolled
-        // key is the better credential the moment it appears.
+        // Explicit-flag rules first: --key and --pass together is refused, and either one alone
+        // forces its route. With neither, BanterSetup applies the config rules (a password AND
+        // an existing key file is refused; no password means the key must exist and validate).
         var explicitKey = arg("--key") is not null;
         var explicitPass = arg("--pass") is not null;
         if (explicitKey && explicitPass)
@@ -137,75 +119,27 @@ public sealed class BanterRunner
             return 1;
         }
 
-        if (!explicitKey && !explicitPass && password.Length > 0 && File.Exists(keyPath))
+        var (privateKey, credentialError) = await BanterSetup
+            .ResolveCredentialAsync(explicitKey ? "" : password, explicitPass ? "" : keyPath, cancellationToken)
+            .ConfigureAwait(false);
+        if (credentialError is not null)
         {
-            Console.Error.WriteLine(
-                $"error: both Banter:Password and a key file at {Path.GetFullPath(keyPath)} are configured. " +
-                "Clear the password (the enrolled key is the better credential) or move the key aside.");
+            Console.Error.WriteLine($"error: {credentialError}");
             return 1;
         }
 
-        byte[]? privateKey = null;
-        if (explicitKey || (!explicitPass && password.Length == 0))
-        {
-            if (await BanterKeyStore.ValidateAsync(keyPath, cancellationToken).ConfigureAwait(false) is { } problem)
-            {
-                Console.Error.WriteLine($"error: {problem}");
-                return 1;
-            }
-
-            privateKey = await BanterKeyStore.LoadAsync(keyPath, cancellationToken).ConfigureAwait(false);
-            password = "";
-        }
-
-        var openAi = _services.GetRequiredService<IOptions<OpenAIOptions>>().Value;
         var agentDefaults = _services.GetRequiredService<IOptions<AgentOptions>>().Value;
-        var model = options.Model.Length > 0 ? options.Model : openAi.DefaultModel;
-
-        // The room is a shared, multi-party space; the default single-user prompt would have the
-        // agent addressing "you" and dumping walls of text into it.
-        var systemPrompt = options.SystemPrompt.Length > 0
-            ? options.SystemPrompt
-            : agentDefaults.SystemPrompt +
-              "\n\nYou are speaking in a shared chat room with several humans and agents. " +
-              "Messages arrive prefixed with the sender's name. Keep replies short and " +
-              "conversational — a sentence or two unless asked for detail — and do not prefix " +
-              "your replies with your own name.";
-
-        var agentOptions = new BanterAgentOptions
-        {
-            Server = new Uri(server),
-            User = user,
-            Password = password,
-            PrivateKey = privateKey,
-            Rooms = rooms,
-            ClientName = "DaggerAgent",
-            RespondToEveryMessage = options.RespondToEveryMessage,
-            Locality = options.Locality.Trim().ToLowerInvariant() switch
-            {
-                "local" => AgentLocality.Local,
-                "frontier" => AgentLocality.Frontier,
-                _ => AgentLocality.Unknown,
-            },
-            Clearance = options.Clearance.Trim().ToLowerInvariant() switch
-            {
-                "public" => DataSensitivity.Public,
-                "internal" => DataSensitivity.Internal,
-                "sensitive" => DataSensitivity.Sensitive,
-                _ => DataSensitivity.Unknown,
-            },
-            Skills = options.Skills.Count > 0 ? options.Skills : ["code", "tools"],
-            Description = options.Description.Length > 0 ? options.Description : $"DaggerAgent ({model})",
-            CostTier = options.CostTier,
-            WantsDelegator = options.WantsDelegator,
-        };
+        var model = BanterSetup.DisplayModel(options);
+        var systemPrompt = BanterSetup.BuildSystemPrompt(options, agentDefaults);
+        var agentOptions = BanterSetup.BuildAgentOptions(options, server, user, password, privateKey, rooms, model);
 
         var store = _services.GetRequiredService<IJobStore>();
         await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await _services.GetRequiredService<MemoryStore>().InitializeAsync(cancellationToken).ConfigureAwait(false);
 
         var llmAgent = _services.GetRequiredService<LlmAgent>();
-        await using var agent = new DaggerBanterAgent(agentOptions, llmAgent, model, systemPrompt, _log);
+        await using var agent = new DaggerBanterAgent(
+            agentOptions, llmAgent, options.Model, options.EndpointId, systemPrompt, _log);
         agent.TurnStarted += (room, sender) => _log.LogInformation("[{Room}] answering {Sender}...", room, sender);
 
         try
@@ -224,7 +158,7 @@ public sealed class BanterRunner
                           $"skills [{string.Join(", ", agentOptions.Skills)}].");
         if (privateKey is not null)
         {
-            Console.WriteLine($"Authenticated with the enrolled key ({Fingerprint(privateKey)}).");
+            Console.WriteLine($"Authenticated with the enrolled key ({BanterSetup.Fingerprint(privateKey)}).");
         }
         else
         {
@@ -234,14 +168,5 @@ public sealed class BanterRunner
 
         await agent.RunAsync(cancellationToken).ConfigureAwait(false);
         return 0;
-    }
-
-    /// <summary>The public half's fingerprint, so an operator can match this machine against the
-    /// agents page without touching the private key.</summary>
-    private static string Fingerprint(byte[] privateKey)
-    {
-        using var ecdsa = ECDsa.Create();
-        ecdsa.ImportPkcs8PrivateKey(privateKey, out _);
-        return AgentKeys.Fingerprint(ecdsa.ExportSubjectPublicKeyInfo());
     }
 }
