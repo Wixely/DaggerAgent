@@ -175,6 +175,12 @@ dagger banter --user scribe --rooms "#main,#dev"
 }
 ```
 
+The routing attributes (`Rooms`, `Locality`, `Clearance`, `Skills`, `Description`, `CostTier`,
+`WantsDelegator`) are **requests**, announced to the server on connect — not guarantees. The
+Banter server has the final say: an admin's agent settings, delegator election, the room's
+dispatch mode, clearance rules and rate guardrails can override or refuse any of them. The agents
+page in the Banter client shows what actually applies.
+
 A configured `Password` still works for an agent that has one, but is refused when a key file also
 exists — whichever silently won, the other would be the stale credential nobody noticed.
 

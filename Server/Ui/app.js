@@ -1237,12 +1237,9 @@ function renderBanterConfig() {
     return { wrap, inp };
   };
 
-  form.appendChild(el("div", { class: "endpoint-head" },
-    el("span", { class: "endpoint-name" }, "Configuration")));
-
   const serverF = field("Server", { value: cfg.server ?? "tcp://127.0.0.1:7770" });
   const userF = field("User", { value: cfg.user ?? "dagger" });
-  const roomsF = field("Rooms (comma-separated)", { value: (cfg.rooms || []).join(", "), placeholder: "#main" });
+  const roomsF = field("Rooms to join (comma-separated)", { value: (cfg.rooms || []).join(", "), placeholder: "#main" });
   const keyFileF = field("Key file path", { value: cfg.keyFile ?? "banter.key" });
   const passF = field(cfg.hasPassword ? "Password (set — leave blank to keep)" : "Password (blank = key login)", {
     type: "password", autocomplete: "new-password", placeholder: cfg.hasPassword ? "••••••" : "",
@@ -1278,19 +1275,33 @@ function renderBanterConfig() {
   promptArea.value = cfg.systemPrompt ?? "";
   promptWrap.appendChild(promptArea);
 
+  // Two groups, split by who decides. Connection & answering is entirely this side's
+  // business; the announced attributes are REQUESTS the server weighs against the admin's
+  // agent settings, delegator election, dispatch mode and room rules.
+  form.appendChild(el("div", { class: "endpoint-head" },
+    el("span", { class: "endpoint-name" }, "Connection & answering")));
+  form.appendChild(el("p", { class: "text-muted small" },
+    "How DaggerAgent reaches the server and produces replies. Applied on the next connect."));
   form.appendChild(el("div", { class: "row-2" }, serverF.wrap, userF.wrap));
-  form.appendChild(roomsF.wrap);
   form.appendChild(keyFileF.wrap);
   form.appendChild(passF.wrap);
   form.appendChild(el("div", { class: "row-2" }, endpointWrap, modelF.wrap));
-  form.appendChild(costF.wrap);
+  form.appendChild(promptWrap);
+  form.appendChild(autoConnectF.wrap);
+
+  form.appendChild(el("div", { class: "endpoint-head", style: "margin-top: 10px;" },
+    el("span", { class: "endpoint-name" }, "Requested settings")));
+  form.appendChild(el("p", { class: "text-muted small" },
+    "Announced to the Banter server on connect — requests, not guarantees. The server has the " +
+    "final say: an admin's agent settings, delegator election, the room's dispatch mode, " +
+    "clearance rules and rate guardrails can override or refuse any of them. The agents page " +
+    "in the Banter client shows what actually applies."));
+  form.appendChild(roomsF.wrap);
   form.appendChild(skillsF.wrap);
   form.appendChild(el("div", { class: "row-2" }, localityF.wrap, clearanceF.wrap));
-  form.appendChild(descF.wrap);
+  form.appendChild(el("div", { class: "row-2" }, costF.wrap, descF.wrap));
   form.appendChild(answerAllF.wrap);
   form.appendChild(delegatorF.wrap);
-  form.appendChild(autoConnectF.wrap);
-  form.appendChild(promptWrap);
 
   const saveBtn = el("button", { type: "submit", class: "btn btn-sm btn-primary" }, "Save");
   form.appendChild(el("div", { class: "endpoint-actions" }, saveBtn));

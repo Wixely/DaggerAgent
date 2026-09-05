@@ -3,6 +3,13 @@ namespace Daggeragent.Configuration;
 /// <summary>
 /// Settings for Banter mode (`dagger banter`): DaggerAgent logging into a Banter room server as
 /// an agent and answering with its own LLM/tool loop. See the "Banter mode" README section.
+///
+/// <para>The routing attributes here — <see cref="Rooms"/>, <see cref="Locality"/>,
+/// <see cref="Clearance"/>, <see cref="Skills"/>, <see cref="Description"/>,
+/// <see cref="CostTier"/>, <see cref="WantsDelegator"/> — are <b>requests</b>, announced to the
+/// server on connect. The server has the final say: an admin's agent settings, delegator
+/// election, the room's dispatch mode, clearance rules and guardrails can override or refuse
+/// any of them.</para>
 /// </summary>
 public sealed class BanterOptions
 {
