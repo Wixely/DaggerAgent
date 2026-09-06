@@ -87,6 +87,20 @@ public sealed class BanterOptions
     public string SystemPrompt { get; set; } = "";
 
     /// <summary>
+    /// Offer the room's own tools to the model: ask_operator (structured questions the room
+    /// answers by clicking), and the delegator's open_side_room / invite_agent. On by default.
+    /// Worth turning off for an unattended fleet: nothing gates ask_operator on whether anyone
+    /// is present, so an agent nobody is watching would block its turn on the ask timeout.
+    /// </summary>
+    public bool RoomTools { get; set; } = true;
+
+    /// <summary>
+    /// How long ask_operator waits for somebody in the room to answer before telling the model
+    /// plainly that nobody did. The asking agent's turn blocks for this, not the room.
+    /// </summary>
+    public int AskTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
     /// In service mode (`dagger serve`): connect to the Banter server automatically at startup.
     /// Off by default — the connection is managed from the web UI's Banter tab, and this is the
     /// "and keep it that way across restarts" switch.

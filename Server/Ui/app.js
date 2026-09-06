@@ -1302,6 +1302,11 @@ function renderBanterConfig() {
   const descF = field("Roster description (blank = auto)", { value: cfg.description ?? "" });
   const answerAllF = field("Answer every message (mention-mode rooms only)", { type: "checkbox" });
   answerAllF.inp.checked = !!cfg.respondToEveryMessage;
+  const roomToolsF = field("Offer the room's tools (ask_operator, delegator room actions)", { type: "checkbox" });
+  roomToolsF.inp.checked = cfg.roomTools !== false;
+  const askTimeoutF = field("Ask timeout (seconds an ask_operator waits for an answer)", {
+    type: "number", value: cfg.askTimeoutSeconds ?? 300, min: 10,
+  });
   const delegatorF = field("Ask to be the room's delegator", { type: "checkbox" });
   delegatorF.inp.checked = !!cfg.wantsDelegator;
   const autoConnectF = field("Connect automatically when the service starts", { type: "checkbox" });
@@ -1326,6 +1331,8 @@ function renderBanterConfig() {
   form.appendChild(passF.wrap);
   form.appendChild(el("div", { class: "row-2" }, endpointWrap, modelF.wrap));
   form.appendChild(promptWrap);
+  form.appendChild(roomToolsF.wrap);
+  form.appendChild(askTimeoutF.wrap);
   form.appendChild(autoConnectF.wrap);
 
   form.appendChild(el("div", { class: "endpoint-head", style: "margin-top: 10px;" },
@@ -1361,6 +1368,8 @@ function renderBanterConfig() {
       respondToEveryMessage: answerAllF.inp.checked,
       wantsDelegator: delegatorF.inp.checked,
       autoConnect: autoConnectF.inp.checked,
+      roomTools: roomToolsF.inp.checked,
+      askTimeoutSeconds: Number(askTimeoutF.inp.value) || 300,
       systemPrompt: promptArea.value,
     };
     // A blank password box means "leave it alone" — typing sets it, and enrolment clears it.

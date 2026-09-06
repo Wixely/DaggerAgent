@@ -82,13 +82,23 @@ public sealed class DaggerBanterAgent : BanterAgent
             state.EndpointId = _endpointId;
         }
 
-        _log.LogInformation("Banter turn: room={Room} sender={Sender} jobId={JobId}", room, sender, state.Id);
+        // The room's own tools ride along with Dagger's registry rather than being replaced by
+        // it (issue #10): ask_operator for structured questions, the delegator's open_side_room /
+        // invite_agent, and whatever the server granted. Rebuilt per turn because the list is
+        // situational — delegator status changes with elections, grants change under admins —
+        // and dispatched back through the SDK so local-vs-server routing stays its problem.
+        var roomTools = ToolsFor(room)
+            .Select(AITool (d) => new BanterRoomToolFunction(d, room, (name, args, r, ct) => InvokeToolAsync(name, args, r, ct)))
+            .ToList();
+
+        _log.LogInformation("Banter turn: room={Room} sender={Sender} jobId={JobId} roomTools=[{RoomTools}]",
+            room, sender, state.Id, string.Join(", ", ToolsFor(room).Select(t => t.Name)));
 
         // Tag the sender: a room has more than one human, and an untagged transcript makes the
         // model lose track of who it is answering.
         var splitter = new ThinkingSplitter();
         await foreach (var update in _agent
-            .RunStreamingTurnAsync(state, $"{sender}: {prompt}", cancellationToken)
+            .RunStreamingTurnAsync(state, $"{sender}: {prompt}", attachments: null, roomTools, cancellationToken)
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             foreach (var content in update.Contents)

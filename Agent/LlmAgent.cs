@@ -299,14 +299,25 @@ public sealed class LlmAgent
         CancellationToken cancellationToken = default)
         => RunStreamingTurnAsync(state, userMessage, attachments: null, cancellationToken);
 
+    public IAsyncEnumerable<ChatResponseUpdate> RunStreamingTurnAsync(
+        ConversationState state,
+        string userMessage,
+        IReadOnlyList<AIContent>? attachments,
+        CancellationToken cancellationToken = default)
+        => RunStreamingTurnAsync(state, userMessage, attachments, extraTools: null, cancellationToken);
+
     /// <summary>
     /// Overload that accepts non-text user content (e.g. images via <see cref="DataContent"/>)
-    /// alongside the text prompt. Used by the web UI to send multimodal turns.
+    /// alongside the text prompt (used by the web UI for multimodal turns), and per-turn
+    /// <paramref name="extraTools"/> the host contributes on top of the registry — Banter mode's
+    /// room tools (ask_operator, the delegator's room actions, server-granted tools), which must
+    /// ride along rather than be replaced by Dagger's own list (issue #10).
     /// </summary>
     public async IAsyncEnumerable<ChatResponseUpdate> RunStreamingTurnAsync(
         ConversationState state,
         string userMessage,
         IReadOnlyList<AIContent>? attachments,
+        IReadOnlyList<AITool>? extraTools,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (attachments is { Count: > 0 })
@@ -328,6 +339,16 @@ public sealed class LlmAgent
         rawTools.AddRange(_builtIns.ForAgent(state.Id, state.Depth, state.EndpointId, state.Model));
         rawTools.AddRange(_mcpTools.GetTools());
         rawTools = RouteTools(rawTools, userMessage, state);
+
+        // Host-contributed tools join AFTER routing: they were chosen by the host for this
+        // specific turn, so the router has no business dropping them. On a name collision the
+        // registry's tool wins — two functions with one name is a protocol error downstream.
+        if (extraTools is { Count: > 0 })
+        {
+            var taken = new HashSet<string>(
+                rawTools.OfType<AIFunction>().Select(f => f.Name), StringComparer.OrdinalIgnoreCase);
+            rawTools.AddRange(extraTools.Where(t => t is not AIFunction f || taken.Add(f.Name)));
+        }
 
         var cache = new Tools.TurnToolCache();
         var tools = WrapTools(rawTools, state.Id, state.Depth, cache);

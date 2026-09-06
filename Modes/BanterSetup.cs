@@ -98,6 +98,8 @@ public static class BanterSetup
         Description = options.Description.Length > 0 ? options.Description : $"DaggerAgent ({model})",
         CostTier = options.CostTier,
         WantsDelegator = options.WantsDelegator,
+        RoomTools = options.RoomTools,
+        AskTimeout = TimeSpan.FromSeconds(Math.Max(10, options.AskTimeoutSeconds)),
     };
 
     /// <summary>Effective room list: the configured one, or #main when nothing is configured.</summary>

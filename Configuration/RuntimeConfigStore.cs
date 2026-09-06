@@ -155,6 +155,8 @@ public sealed class RuntimeConfigStore
                 if (bp.EndpointId is not null) _banter.EndpointId = bp.EndpointId;
                 if (bp.Model is not null) _banter.Model = bp.Model;
                 if (bp.SystemPrompt is not null) _banter.SystemPrompt = bp.SystemPrompt;
+                if (bp.RoomTools is bool rt) _banter.RoomTools = rt;
+                if (bp.AskTimeoutSeconds is int ats) _banter.AskTimeoutSeconds = ats;
                 if (bp.AutoConnect is bool ac) _banter.AutoConnect = ac;
             }
 
@@ -227,6 +229,8 @@ public sealed class RuntimeConfigStore
                     EndpointId = _banter.EndpointId,
                     Model = _banter.Model,
                     SystemPrompt = _banter.SystemPrompt,
+                    RoomTools = _banter.RoomTools,
+                    AskTimeoutSeconds = _banter.AskTimeoutSeconds,
                     AutoConnect = _banter.AutoConnect,
                 },
             };
@@ -307,6 +311,8 @@ public sealed class RuntimeConfigStore
         public string? EndpointId { get; set; }
         public string? Model { get; set; }
         public string? SystemPrompt { get; set; }
+        public bool? RoomTools { get; set; }
+        public int? AskTimeoutSeconds { get; set; }
         public bool? AutoConnect { get; set; }
     }
 

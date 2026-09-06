@@ -394,6 +394,8 @@ public static class AgentUiEndpoints
                     endpointId = b.EndpointId,
                     model = b.Model,
                     systemPrompt = b.SystemPrompt,
+                    roomTools = b.RoomTools,
+                    askTimeoutSeconds = b.AskTimeoutSeconds,
                     autoConnect = b.AutoConnect,
                 },
                 status = connection.Status,
@@ -430,6 +432,8 @@ public static class AgentUiEndpoints
                 if (patch.EndpointId is not null) b.EndpointId = patch.EndpointId.Trim();
                 if (patch.Model is not null) b.Model = patch.Model.Trim();
                 if (patch.SystemPrompt is not null) b.SystemPrompt = patch.SystemPrompt;
+                if (patch.RoomTools is bool rt) b.RoomTools = rt;
+                if (patch.AskTimeoutSeconds is int ats && ats >= 10) b.AskTimeoutSeconds = ats;
                 if (patch.AutoConnect is bool ac) b.AutoConnect = ac;
             }, ct).ConfigureAwait(false);
             return Results.Json(new { ok = true }, JsonOpts.Default);
@@ -890,6 +894,8 @@ internal sealed record BanterOptionsPatch(
     string? EndpointId = null,
     string? Model = null,
     string? SystemPrompt = null,
+    bool? RoomTools = null,
+    int? AskTimeoutSeconds = null,
     bool? AutoConnect = null);
 
 internal sealed record BanterEnrolBody(

@@ -118,6 +118,13 @@ room server: it logs in as an ordinary Banter user, joins rooms, and answers wit
 loop — tools, sub-agents, job persistence and all. The SDK decides *when* to speak (delegation,
 @mentions, egress rules); DaggerAgent decides *what* to say. Each room holds its own conversation.
 
+The room's own tools ride along with DaggerAgent's registry on every turn, sourced from the SDK's
+`ToolsFor(room)` and dispatched back through it: `ask_operator` (a structured question the room
+answers by clicking, bounded by `Banter:AskTimeoutSeconds`), the delegator's `open_side_room` /
+`invite_agent`, and whatever tools the Banter server granted. `Banter:RoomTools=false` withholds
+them — worth it for an unattended fleet, where an unanswerable ask would just block turns on the
+timeout.
+
 ### Enrolling (recommended)
 
 An operator creates the agent in the Banter desktop client's **agents page** and is handed a
