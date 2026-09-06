@@ -57,6 +57,13 @@ public sealed record ImageInput(string MediaType, string Base64);
 /// Null/empty OptionId dismisses the prompt (treated as deny by the asking delegation).</summary>
 public sealed record PermissionDecisionBody(string RequestId, string? OptionId);
 
+/// <summary>POST /agent/asks/resolve — the human's answers to an ask_request frame (the
+/// built-in ask_user tool). Empty/absent Answers dismisses the question.</summary>
+public sealed record AskDecisionBody(string RequestId, IReadOnlyList<AskAnswerBody>? Answers);
+
+/// <summary>One question's answer: what was clicked, and anything typed alongside it.</summary>
+public sealed record AskAnswerBody(string? Key, IReadOnlyList<string>? Chosen, string? Text);
+
 /// <summary>
 /// Patch shape for ToolsOptions — every field optional so the UI can flip one toggle
 /// without having to re-send the whole settings object.

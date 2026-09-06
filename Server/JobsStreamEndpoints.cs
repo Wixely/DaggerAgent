@@ -37,6 +37,7 @@ public static class JobsStreamEndpoints
             LlmAgent agent,
             Tools.ToolCallSink toolCalls,
             Tools.PermissionBroker permissions,
+            Tools.AskUserBroker asks,
             IJobStore store,
             IOptions<OpenAIOptions> openAi,
             IOptions<EndpointsOptions> endpoints,
@@ -51,7 +52,7 @@ public static class JobsStreamEndpoints
             // Carry this request's cwd as ambient per-turn context instead of mutating the shared
             // ToolsOptions singleton, which two concurrent turns would clobber. Empty = no override.
             using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
-                await StreamTurnAsync(http, agent, toolCalls, permissions, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                await StreamTurnAsync(http, agent, toolCalls, permissions, asks, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
@@ -62,6 +63,7 @@ public static class JobsStreamEndpoints
             LlmAgent agent,
             Tools.ToolCallSink toolCalls,
             Tools.PermissionBroker permissions,
+            Tools.AskUserBroker asks,
             IJobStore store,
             IOptions<EndpointsOptions> endpoints,
             IOptions<OpenAIOptions> openAi,
@@ -84,7 +86,7 @@ public static class JobsStreamEndpoints
             if (!string.IsNullOrWhiteSpace(req.WorkingDirectory))
                 state.WorkingDirectory = req.WorkingDirectory!;
             using (Tools.ToolExecutionContext.Use(req.WorkingDirectory))
-                await StreamTurnAsync(http, agent, toolCalls, permissions, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
+                await StreamTurnAsync(http, agent, toolCalls, permissions, asks, state, req.Prompt, req.Images, ct).ConfigureAwait(false);
             return EmptyResult();
         });
 
@@ -94,6 +96,22 @@ public static class JobsStreamEndpoints
         {
             if (string.IsNullOrWhiteSpace(body.RequestId)) return Results.BadRequest(new { error = "requestId required" });
             var resolved = broker.TryResolve(body.RequestId, string.IsNullOrWhiteSpace(body.OptionId) ? null : body.OptionId);
+            return Results.Json(new { resolved }, JsonOpts);
+        });
+
+        // Delivers the human's answers for an ask_request frame (the built-in ask_user tool).
+        // Same shape as permission resolution: unguessable single-use ids, answerable from any tab.
+        group.MapPost("/asks/resolve", (AskDecisionBody body, Tools.AskUserBroker broker) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.RequestId)) return Results.BadRequest(new { error = "requestId required" });
+            var answers = (body.Answers ?? [])
+                .Where(a => !string.IsNullOrWhiteSpace(a.Key))
+                .Select(a => new Tools.AskUserAnswer(
+                    a.Key!,
+                    (a.Chosen ?? []).Where(c => !string.IsNullOrWhiteSpace(c)).ToList(),
+                    a.Text ?? ""))
+                .ToList();
+            var resolved = broker.TryResolve(body.RequestId, answers.Count > 0 ? answers : null);
             return Results.Json(new { resolved }, JsonOpts);
         });
 
@@ -149,6 +167,7 @@ public static class JobsStreamEndpoints
         LlmAgent agent,
         Tools.ToolCallSink toolCalls,
         Tools.PermissionBroker permissions,
+        Tools.AskUserBroker asks,
         ConversationState state,
         string prompt,
         IReadOnlyList<ImageInput>? images,
@@ -166,6 +185,10 @@ public static class JobsStreamEndpoints
         // policy — the upstream half of the delegation proxy.
         using var permissionReg = permissions.RegisterResponder(
             state.Id, new SsePermissionResponder(sse, permissions));
+
+        // Likewise the agent's own ask_user questions: rendered in the transcript with
+        // clickable options while this stream is attached.
+        using var askReg = asks.RegisterResponder(state.Id, new SseAskResponder(sse, asks));
 
         // Send job-id up front so the UI can hook up plan/pending-write polling immediately.
         await sse.WriteEventAsync("job", new { jobId = state.Id, status = state.Status.ToString(), model = state.Model }, clientCt).ConfigureAwait(false);
@@ -414,6 +437,53 @@ public static class JobsStreamEndpoints
             }
             catch { /* client gone — the decision still stands */ }
             return choice;
+        }
+    }
+
+    /// <summary>
+    /// Puts the agent's own ask_user question in front of the browser as an <c>ask_request</c>
+    /// frame and waits for POST /agent/asks/resolve to deliver the answers. The resolution is
+    /// echoed back as <c>ask_resolved</c> so the prompt UI collapses even when the answer
+    /// arrived from another tab.
+    /// </summary>
+    private sealed class SseAskResponder : Tools.IAskUserResponder
+    {
+        private readonly SseWriter _sse;
+        private readonly Tools.AskUserBroker _broker;
+
+        public SseAskResponder(SseWriter sse, Tools.AskUserBroker broker)
+        {
+            _sse = sse;
+            _broker = broker;
+        }
+
+        public async Task<IReadOnlyList<Tools.AskUserAnswer>?> AskAsync(Tools.AskUserPrompt prompt, CancellationToken ct)
+        {
+            // Park the wait before the frame goes out so a fast answer can't race it.
+            var decision = _broker.WaitForAnswersAsync(prompt.RequestId, ct);
+            await _sse.WriteEventAsync("ask_request", new
+            {
+                requestId = prompt.RequestId,
+                questions = prompt.Questions.Select(q => new
+                {
+                    key = q.Key,
+                    header = q.Header,
+                    question = q.Question,
+                    options = q.Options.Select(o => new { value = o.Value, label = o.Label, description = o.Description }),
+                    multiSelect = q.MultiSelect,
+                }),
+            }, ct).ConfigureAwait(false);
+            var answers = await decision.ConfigureAwait(false);
+            try
+            {
+                await _sse.WriteEventAsync("ask_resolved", new
+                {
+                    requestId = prompt.RequestId,
+                    answers = answers?.Select(a => new { key = a.Key, chosen = a.Chosen, text = a.Text }),
+                }, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch { /* client gone — the answers still stand */ }
+            return answers;
         }
     }
 

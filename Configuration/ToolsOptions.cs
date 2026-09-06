@@ -131,6 +131,13 @@ public sealed class ToolsOptions
     /// so 16 000 ≈ 4 K tokens per offload threshold. Set to 0 to disable.
     /// </summary>
     public int MaxToolResultChars { get; set; } = 16_000;
+
+    /// <summary>
+    /// How long the built-in <c>ask_user</c> tool waits for the person driving the job to
+    /// answer before telling the model plainly that nobody did. The asking turn blocks for
+    /// this; the rest of the app does not.
+    /// </summary>
+    public int AskUserTimeoutSeconds { get; set; } = 300;
 }
 
 /// <summary>

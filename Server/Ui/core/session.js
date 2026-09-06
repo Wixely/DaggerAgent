@@ -47,6 +47,20 @@ export function createSession({ api, streamPost, state, transcript, host }) {
       case "permission_resolved":
         transcript.resolvePermissionPrompt(data.requestId, data.optionId);
         break;
+      case "ask_request":
+        transcript.showAskPrompt(data, async (answers) => {
+          try {
+            await api("/asks/resolve", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requestId: data.requestId, answers }),
+            });
+          } catch (err) { console.error("ask resolve failed", err); }
+        });
+        break;
+      case "ask_resolved":
+        transcript.resolveAskPrompt(data.requestId, data.answers);
+        break;
       case "usage":
         transcript.setUsageStamp(data);
         break;

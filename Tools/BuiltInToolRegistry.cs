@@ -16,6 +16,7 @@ public sealed class BuiltInToolRegistry
     private readonly ToolResultTools _toolResults;
     private readonly CliDelegationTools _cliDelegation;
     private readonly AcpDelegationTools _acpDelegation;
+    private readonly AskUserTool _askUser;
     private readonly AgentOptions _agentOptions;
     private readonly ToolsOptions _toolsOptions;
 
@@ -30,6 +31,7 @@ public sealed class BuiltInToolRegistry
         ToolResultTools toolResults,
         CliDelegationTools cliDelegation,
         AcpDelegationTools acpDelegation,
+        AskUserTool askUser,
         IOptions<AgentOptions> agentOptions,
         IOptions<ToolsOptions> toolsOptions)
     {
@@ -43,6 +45,7 @@ public sealed class BuiltInToolRegistry
         _toolResults = toolResults;
         _cliDelegation = cliDelegation;
         _acpDelegation = acpDelegation;
+        _askUser = askUser;
         _agentOptions = agentOptions.Value;
         _toolsOptions = toolsOptions.Value;
     }
@@ -68,6 +71,10 @@ public sealed class BuiltInToolRegistry
         tools.AddRange(_cliDelegation.Build(parentJobId, currentDepth));
         // delegate_to_acp_* — pooled ACP agents; same AllowCliDelegation gate inside .Build().
         tools.AddRange(_acpDelegation.Build(parentJobId, currentDepth));
+        // ask_user — a structured question to whoever is driving the job (web transcript or
+        // TUI). Registered always; with no responder attached it answers immediately that
+        // nobody is there to ask, so it stays harmless in headless contexts.
+        tools.Add(_askUser.Build(parentJobId));
         return tools;
     }
 }

@@ -73,6 +73,14 @@ public sealed class InteractiveRunner
     // into 1.
     private volatile bool _suppressRender;
 
+    // The ask_user question currently waiting for input, if any. Set by TuiAskResponder
+    // for the duration of one question; while set, the key reader's Enter delivers the
+    // line here instead of the prompt queue. One at a time via _askGate — the model can
+    // emit parallel tool calls, and two questions fighting over one input line would
+    // interleave unreadably.
+    private volatile TaskCompletionSource<string>? _pendingAskLine;
+    private readonly SemaphoreSlim _askGate = new(1, 1);
+
     // Tracks whether the user has submitted the first non-slash line of this session.
     // While false (and the state has no turns), F8 ("Resume last in this dir") is
     // offered in the header; once a real turn starts, F8 is hidden. /new resets it.
@@ -118,6 +126,7 @@ public sealed class InteractiveRunner
         var mcpHost = _services.GetRequiredService<McpClientHost>();
         var builtIns = _services.GetRequiredService<BuiltInToolRegistry>();
         var memory = _services.GetRequiredService<MemoryStore>();
+        var askBroker = _services.GetRequiredService<Tools.AskUserBroker>();
 
         await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await memory.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -229,6 +238,11 @@ public sealed class InteractiveRunner
                             _activeStreamCts = streamCts;
                             _isStreaming = true;
                             _firstTurnStarted = true;
+                            // While this turn streams, the agent's own ask_user questions render in
+                            // the chat and are answered from the input line — the key reader diverts
+                            // Enter to the pending question instead of queueing a new prompt.
+                            using var askReg = askBroker.RegisterResponder(
+                                state.Id, new TuiAskResponder(this, ctx, layout, state, openAi, mcpHost, builtIns, input));
                             Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
                             try
                             {
@@ -1020,6 +1034,15 @@ public sealed class InteractiveRunner
             }
             var line = input.Buffer.ToString();
             input.Clear();
+            // While the agent's ask_user question is waiting, the input line answers IT —
+            // even an empty line, which is a deliberate "skip" — rather than queueing a
+            // new prompt underneath the very turn that is asking.
+            var pendingAsk = _pendingAskLine;
+            if (pendingAsk is not null && pendingAsk.TrySetResult(line))
+            {
+                Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
+                return;
+            }
             if (!string.IsNullOrWhiteSpace(line))
             {
                 RecordHistory(line);
@@ -1684,6 +1707,130 @@ public sealed class InteractiveRunner
     private static int SafeGetWindowHeight()  { try { return Console.WindowHeight; }  catch { return -1; } }
 
     // ──────────────────────────── nested types ────────────────────────────
+
+    /// <summary>
+    /// Renders the agent's own ask_user question into the chat — header, question, numbered
+    /// options — and answers it from the input line: while a question is pending, the key
+    /// reader's Enter delivers the line here instead of the prompt queue. A number (or
+    /// comma-separated numbers, for multi-select) picks options; anything else is free text;
+    /// an empty line skips the question. Questions run one at a time through the ask gate so
+    /// parallel tool calls cannot fight over the one input line.
+    /// </summary>
+    private sealed class TuiAskResponder : Tools.IAskUserResponder
+    {
+        private readonly InteractiveRunner _r;
+        private readonly LiveDisplayContext _ctx;
+        private readonly Layout _layout;
+        private readonly ConversationState _state;
+        private readonly OpenAIOptions _openAi;
+        private readonly McpClientHost _mcpHost;
+        private readonly BuiltInToolRegistry _builtIns;
+        private readonly InputState _input;
+
+        public TuiAskResponder(
+            InteractiveRunner r, LiveDisplayContext ctx, Layout layout, ConversationState state,
+            OpenAIOptions openAi, McpClientHost mcpHost, BuiltInToolRegistry builtIns, InputState input)
+        {
+            _r = r;
+            _ctx = ctx;
+            _layout = layout;
+            _state = state;
+            _openAi = openAi;
+            _mcpHost = mcpHost;
+            _builtIns = builtIns;
+            _input = input;
+        }
+
+        public async Task<IReadOnlyList<Tools.AskUserAnswer>?> AskAsync(Tools.AskUserPrompt prompt, CancellationToken ct)
+        {
+            await _r._askGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var answers = new List<Tools.AskUserAnswer>();
+                foreach (var q in prompt.Questions)
+                {
+                    _r._chat.AddLine("");
+                    _r._chat.AddLine($"[cyan]? {Markup.Escape(q.Header)}[/] — {Markup.Escape(q.Question)}");
+                    for (var i = 0; i < q.Options.Count; i++)
+                    {
+                        var o = q.Options[i];
+                        var desc = o.Description.Length > 0 ? $" [dim]— {Markup.Escape(o.Description)}[/]" : "";
+                        _r._chat.AddLine($"  [cyan]{i + 1}.[/] {Markup.Escape(o.Label)}{desc}");
+                    }
+                    var hint = q.Options.Count > 0
+                        ? (q.MultiSelect
+                            ? "answer with numbers (e.g. 1,3) or type your own; Enter alone skips"
+                            : "answer with a number or type your own; Enter alone skips")
+                        : "type your answer; Enter alone skips";
+                    _r._chat.AddLine($"  [dim]{hint}[/]");
+                    Repaint();
+
+                    var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _r._pendingAskLine = tcs;
+                    string line;
+                    try
+                    {
+                        using var reg = ct.Register(() => tcs.TrySetCanceled(ct));
+                        line = await tcs.Task.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _r._pendingAskLine = null;
+                    }
+
+                    _r._chat.AddLine($"  [grey]→ {Markup.Escape(line.Length > 0 ? line : "(skipped)")}[/]");
+                    Repaint();
+                    answers.Add(Parse(q, line));
+                }
+                return answers;
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+            finally
+            {
+                _r._askGate.Release();
+            }
+        }
+
+        private void Repaint() => _r.Render(_ctx, _layout, _state, _openAi, _mcpHost, _builtIns, _input);
+
+        /// <summary>Numbers pick options (several, comma/space-separated, when multi-select);
+        /// anything that does not parse as in-range numbers is free text; empty skips.</summary>
+        private static Tools.AskUserAnswer Parse(Tools.AskUserQuestion q, string line)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0) return new Tools.AskUserAnswer(q.Key, [], "");
+
+            if (q.Options.Count > 0)
+            {
+                var parts = trimmed.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var picked = new List<string>();
+                var allNumbers = parts.Length > 0;
+                foreach (var part in parts)
+                {
+                    if (int.TryParse(part, out var n) && n >= 1 && n <= q.Options.Count)
+                    {
+                        picked.Add(q.Options[n - 1].Value);
+                    }
+                    else
+                    {
+                        allNumbers = false;
+                        break;
+                    }
+                }
+
+                if (allNumbers && picked.Count > 0)
+                {
+                    return new Tools.AskUserAnswer(
+                        q.Key, q.MultiSelect ? picked : [picked[0]], "");
+                }
+            }
+
+            return new Tools.AskUserAnswer(q.Key, [], trimmed);
+        }
+    }
 
     /// <summary>
     /// Append-only chat content rendered into the middle of the TUI. Supports a single

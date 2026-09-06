@@ -37,6 +37,9 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
   // when the answer came from another tab.
   const permissionNodes = {};
 
+  // Same again for ask_user questions (ask_request / ask_resolved).
+  const askNodes = {};
+
   function clearTranscript() {
     mount.replaceChildren(view.emptyState());
   }
@@ -256,6 +259,24 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     withScrollStick(() => node.replaceChildren(view.permissionResolved(optionId)));
   }
 
+  // The agent asking its operator a structured question mid-turn (the ask_user tool).
+  // Same lifecycle as the permission prompt: rendered inline, collapsed on ask_resolved.
+  function showAskPrompt(data, onAnswer) {
+    if (!state.currentMsg || !view.askPrompt) return;
+    const node = view.askPrompt(data, onAnswer);
+    if (!node) return;
+    askNodes[data.requestId || ""] = node;
+    pushSegment(node);
+    state.lastBlockType = "ask";
+  }
+
+  function resolveAskPrompt(requestId, answers) {
+    const node = askNodes[requestId || ""];
+    if (!node) return;
+    delete askNodes[requestId || ""];
+    withScrollStick(() => node.replaceChildren(view.askResolved(answers)));
+  }
+
   function setUsageStamp(usage) {
     if (!state.currentMsg) return;
     const stamp = state.currentMsg.querySelector(".usage-stamp");
@@ -291,6 +312,8 @@ export function createTranscript({ mount, state, view, stickThreshold = 120, onR
     updateToolProgress,
     showPermissionPrompt,
     resolvePermissionPrompt,
+    showAskPrompt,
+    resolveAskPrompt,
     setUsageStamp,
     showRetryButton,
   };

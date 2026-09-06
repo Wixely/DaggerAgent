@@ -310,6 +310,8 @@ public static class Program
         builder.Services.AddSingleton<CliSessionStore>();
         builder.Services.AddSingleton<CliDelegationTools>();
         builder.Services.AddSingleton<PermissionBroker>();
+        builder.Services.AddSingleton<AskUserBroker>();
+        builder.Services.AddSingleton<AskUserTool>();
         builder.Services.AddSingleton<AcpConnectionPool>();
         builder.Services.AddSingleton<AcpDelegationTools>();
         builder.Services.AddSingleton<RuntimeConfigStore>();

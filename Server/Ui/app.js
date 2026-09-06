@@ -210,6 +210,89 @@ const transcriptView = {
   },
   permissionResolved: (optionId) => el("span", { class: "pp-resolved text-muted" },
     optionId ? `→ permission: ${optionId}` : "→ permission request dismissed"),
+  // The agent's own ask_user question. Single question with options and no multi-select
+  // answers on the click; anything else (multi-select, several questions, typed text)
+  // gathers into one "Send answer" submit. Free text always rides along with the click.
+  askPrompt: (data, onAnswer) => {
+    const questions = data.questions || [];
+    const selections = new Map();   // key → Set of chosen values
+    const texts = new Map();        // key → input element
+    const quickSubmit = questions.length === 1
+      && !questions[0].multiSelect
+      && (questions[0].options || []).length > 0;
+
+    const collect = () => questions.map((q) => ({
+      key: q.key,
+      chosen: Array.from(selections.get(q.key) || []),
+      text: (texts.get(q.key)?.value || "").trim(),
+    })).filter((a) => a.chosen.length > 0 || a.text.length > 0);
+
+    let submitted = false;
+    const submit = (answers) => {
+      if (submitted || !answers.length) return;
+      submitted = true;
+      onAnswer(answers);
+    };
+
+    const wrap = el("div", { class: "ask-prompt" },
+      el("span", { class: "ask-header" }, "the agent asks"));
+
+    for (const q of questions) {
+      selections.set(q.key, new Set());
+      const block = el("div", {});
+      if (q.header && q.header !== q.key) block.appendChild(el("div", { class: "ask-header" }, q.header));
+      block.appendChild(el("div", { class: "ask-question" }, q.question || q.key));
+
+      const opts = el("div", { class: "ask-options" });
+      for (const o of q.options || []) {
+        const btn = el("button", { class: "pp-btn", type: "button" }, o.label || o.value);
+        if (o.description) btn.appendChild(el("span", { class: "opt-desc" }, o.description));
+        btn.addEventListener("click", () => {
+          const set = selections.get(q.key);
+          if (quickSubmit) {
+            set.clear(); set.add(o.value);
+            submit(collect());
+            return;
+          }
+          if (q.multiSelect) {
+            if (set.has(o.value)) { set.delete(o.value); btn.classList.remove("selected"); }
+            else { set.add(o.value); btn.classList.add("selected"); }
+          } else {
+            set.clear(); set.add(o.value);
+            for (const sib of opts.querySelectorAll(".pp-btn")) sib.classList.remove("selected");
+            btn.classList.add("selected");
+          }
+        });
+        opts.appendChild(btn);
+      }
+      if (opts.childElementCount > 0) block.appendChild(opts);
+
+      const text = el("input", {
+        class: "ask-text", type: "text",
+        placeholder: (q.options || []).length > 0 ? "or type an answer…" : "type your answer…",
+      });
+      text.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); submit(collect()); }
+      });
+      texts.set(q.key, text);
+      block.appendChild(text);
+      wrap.appendChild(block);
+    }
+
+    if (!quickSubmit) {
+      wrap.appendChild(el("div", { class: "ask-submit-row" },
+        el("button", {
+          class: "pp-btn pp-allow", type: "button",
+          onclick: () => submit(collect()),
+        }, "Send answer")));
+    }
+    return wrap;
+  },
+  askResolved: (answers) => el("span", { class: "pp-resolved text-muted" },
+    answers && answers.length
+      ? "→ answered: " + answers.map((a) =>
+          `${a.key} = ${[...(a.chosen || []), a.text].filter(Boolean).join(", ") || "(nothing)"}`).join("; ")
+      : "→ question dismissed"),
   // durationMs is the tool's own measured run time. It is absent when no measurement
   // reached the stream, and the timing is then simply omitted rather than shown as zero.
   toolResult: (excerpt, length, durationMs) =>
