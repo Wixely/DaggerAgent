@@ -167,6 +167,17 @@ public sealed class BanterRunner
         Console.WriteLine("Press Ctrl+C to stop.");
 
         await agent.RunAsync(cancellationToken).ConfigureAwait(false);
+
+        // RunAsync also returns when the server ends the session on purpose — identity revoked,
+        // re-keyed or removed. That is not an outage and the client does not redial; say why
+        // instead of exiting as if someone pressed Ctrl+C.
+        if (agent.EvictedReason is { } evicted)
+        {
+            Console.Error.WriteLine($"error: the server ended this session: {evicted}");
+            Console.Error.WriteLine("The identity was revoked or reissued. Enrol again with a fresh code.");
+            return 1;
+        }
+
         return 0;
     }
 }

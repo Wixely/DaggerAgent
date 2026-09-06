@@ -1086,17 +1086,22 @@ function renderBanterStatus() {
   const st = (state.banter && state.banter.status) || {};
   const cfg = (state.banter && state.banter.config) || {};
   const connected = st.state === "connected";
+  const live = connected || st.state === "reconnecting";   // an agent object exists server-side
 
   const card = el("div", { class: "endpoint-card" });
-  const badge = el("span", {
-    class: `badge ${connected ? "bg-success" : st.state === "connecting" ? "bg-warning" : "bg-secondary"}`,
-  }, st.state || "disconnected");
+  const badgeClass =
+    connected ? "bg-success" :
+    st.state === "reconnecting" || st.state === "connecting" ? "bg-warning" :
+    st.state === "evicted" ? "bg-danger" : "bg-secondary";
+  const badgeText = st.state === "reconnecting" && st.reconnectAttempt > 0
+    ? `reconnecting (attempt ${st.reconnectAttempt})`
+    : (st.state || "disconnected");
   card.appendChild(el("div", { class: "endpoint-head" },
     el("span", { class: "endpoint-name" }, "Banter connection"),
-    badge));
+    el("span", { class: `badge ${badgeClass}` }, badgeText)));
 
   const meta = [];
-  if (connected) {
+  if (live) {
     meta.push(`${st.user} on ${st.server}`);
     meta.push(`rooms: ${(st.rooms || []).join(", ")}`);
     if (st.model) meta.push(`model: ${st.model}`);
@@ -1109,21 +1114,45 @@ function renderBanterStatus() {
   }
   card.appendChild(el("div", { class: "endpoint-meta" }, meta.join(" · ")));
 
-  if (st.lastError) {
+  // What the server actually granted, next to what the "Requested settings" asked for.
+  // A difference is not an error — it is an admin's override doing its job.
+  if (st.granted) {
+    const g = st.granted;
+    const overridden =
+      g.locality !== (cfg.locality || "local") ||
+      g.clearance !== (cfg.clearance || "sensitive") ||
+      (g.skills || []).join(",") !== (cfg.skills || []).join(",");
+    card.appendChild(el("div", { class: "endpoint-meta" },
+      `granted: ${g.locality} · ${g.clearance} · skills [${(g.skills || []).join(", ")}] · ` +
+      `cost ${g.costTier} · ${g.workMode}` +
+      (overridden ? " — differs from the requested settings (admin override in effect)" : "")));
+  }
+
+  if (st.state === "reconnecting") {
+    card.appendChild(el("div", { class: "endpoint-meta" },
+      "The server is unreachable. Redialling with backoff; on success the agent re-authenticates, " +
+      "rejoins its rooms and re-announces its attributes by itself."));
+  }
+  if (st.state === "evicted") {
+    card.appendChild(el("div", { class: "endpoint-meta text-danger" },
+      `The server ended the session: ${st.evictedReason || "no reason given"}. ` +
+      "The identity was revoked or reissued, so reconnecting cannot help — move the old key aside " +
+      "and enrol again with a fresh code."));
+  } else if (st.lastError && !connected) {
     card.appendChild(el("div", { class: "endpoint-meta text-danger" }, `last error: ${st.lastError}`));
   }
 
   const actions = el("div", { class: "endpoint-actions" });
   const mainBtn = el("button", {
-    class: `btn btn-sm ${connected ? "btn-outline-danger" : "btn-primary"}`,
+    class: `btn btn-sm ${live ? "btn-outline-danger" : "btn-primary"}`,
     type: "button",
-  }, connected ? "Disconnect" : "Connect");
+  }, live ? "Disconnect" : "Connect");
   mainBtn.addEventListener("click", async () => {
     mainBtn.disabled = true;
     try {
-      const r = await api(`/banter/${connected ? "disconnect" : "connect"}`, { method: "POST" });
-      if (!connected && !r.ok) showToast("Connect failed: " + (r.error || "unknown error"));
-    } catch (e) { showToast((connected ? "Disconnect" : "Connect") + " failed: " + e.message); }
+      const r = await api(`/banter/${live ? "disconnect" : "connect"}`, { method: "POST" });
+      if (!live && !r.ok) showToast("Connect failed: " + (r.error || "unknown error"));
+    } catch (e) { showToast((live ? "Disconnect" : "Connect") + " failed: " + e.message); }
     await loadBanter();
   });
   actions.appendChild(mainBtn);
@@ -1133,6 +1162,16 @@ function renderBanterStatus() {
   }, "↻ Refresh"));
   card.appendChild(actions);
   c.appendChild(card);
+
+  // Keep an unsettled state honest without a manual refresh: while connecting or redialling
+  // (and only while the tab is showing), poll until it settles.
+  if ((st.state === "reconnecting" || st.state === "connecting") && !c._banterPollQueued) {
+    c._banterPollQueued = true;
+    setTimeout(() => {
+      c._banterPollQueued = false;
+      if (els.panes.banter.classList.contains("active")) loadBanter();
+    }, 3000);
+  }
 }
 
 function renderBanterEnrol() {

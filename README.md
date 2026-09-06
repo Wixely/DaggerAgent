@@ -150,6 +150,15 @@ auto-connect on service start. Edits persist to `runtime-config.json` and apply 
 connect. Enrolment and connection state are also scriptable at `/agent/banter`
 (`GET`, `POST /config`, `POST /enrol`, `POST /connect`, `POST /disconnect`).
 
+The status is honest about outages. A dropped connection shows **reconnecting (attempt n)**
+while the SDK redials with jittered backoff — on success it re-authenticates (fresh signed
+nonce), rejoins its rooms and re-announces its attributes by itself. Auto-connect retries a
+server that is still booting the same way. The card also shows the attributes the server
+actually **granted** next to the requested ones, flagging when an admin override is in effect.
+The one terminal state is **evicted**: the identity was revoked or reissued server-side, and
+reconnecting cannot help — deliberately nothing retries out of it; move the old key aside and
+enrol again with a fresh code.
+
 ### Running standalone
 
 ```bash

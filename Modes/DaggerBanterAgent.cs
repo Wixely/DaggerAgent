@@ -40,6 +40,38 @@ public sealed class DaggerBanterAgent : BanterAgent
         _log = log;
     }
 
+    // ── Connection lifecycle, surfaced for the host ──────────────────────────────────────────
+    // The SDK's client redials, re-auths and rejoins on its own (and the base class re-announces);
+    // these forwarders exist so BanterConnectionService can show that honestly instead of a
+    // status card that says "connected" through an outage.
+
+    /// <summary>The connection dropped; the client is about to start redialling.</summary>
+    public event Action? ConnectionLost;
+
+    /// <summary>A redial attempt is starting (1-based).</summary>
+    public event Action<int>? ConnectionRetrying;
+
+    /// <summary>Back: re-authenticated, rooms rejoined, attributes re-announced.</summary>
+    public event Action? ConnectionRestored;
+
+    /// <summary>
+    /// The server ended the session on purpose — identity revoked, re-keyed or removed — and the
+    /// client will not redial, because the credential it would redial with is what just stopped
+    /// existing. Terminal until a human re-enrols.
+    /// </summary>
+    public event Action<string>? Evicted;
+
+    /// <summary>
+    /// Call once after <see cref="BanterAgent.StartAsync"/>: the client only exists from then.
+    /// </summary>
+    public void WireConnectionEvents()
+    {
+        Client.Disconnected += () => ConnectionLost?.Invoke();
+        Client.Reconnecting += attempt => ConnectionRetrying?.Invoke(attempt);
+        Client.Reconnected += () => ConnectionRestored?.Invoke();
+        Client.Evicted += reason => Evicted?.Invoke(reason);
+    }
+
     protected override async IAsyncEnumerable<string> RespondAsync(
         string room, string sender, string prompt,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
