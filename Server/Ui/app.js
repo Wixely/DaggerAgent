@@ -245,12 +245,17 @@ const transcriptView = {
 
       const opts = el("div", { class: "ask-options" });
       for (const o of q.options || []) {
-        const btn = el("button", { class: "pp-btn", type: "button" }, o.label || o.value);
-        if (o.description) btn.appendChild(el("span", { class: "opt-desc" }, o.description));
+        // A radio (single-select) or checkbox (multi-select) mark leads each option, so
+        // what kind of choice this is reads before the first click.
+        const body = el("span", { class: "opt-body" }, el("span", { class: "opt-label" }, o.label || o.value));
+        if (o.description) body.appendChild(el("span", { class: "opt-desc" }, o.description));
+        const btn = el("button", { class: "ask-opt", type: "button" },
+          el("span", { class: `opt-mark ${q.multiSelect ? "multi" : "single"}` }), body);
         btn.addEventListener("click", () => {
           const set = selections.get(q.key);
           if (quickSubmit) {
             set.clear(); set.add(o.value);
+            btn.classList.add("selected");
             submit(collect());
             return;
           }
@@ -259,7 +264,7 @@ const transcriptView = {
             else { set.add(o.value); btn.classList.add("selected"); }
           } else {
             set.clear(); set.add(o.value);
-            for (const sib of opts.querySelectorAll(".pp-btn")) sib.classList.remove("selected");
+            for (const sib of opts.querySelectorAll(".ask-opt")) sib.classList.remove("selected");
             btn.classList.add("selected");
           }
         });
@@ -282,7 +287,7 @@ const transcriptView = {
     if (!quickSubmit) {
       wrap.appendChild(el("div", { class: "ask-submit-row" },
         el("button", {
-          class: "pp-btn pp-allow", type: "button",
+          class: "ask-send", type: "button",
           onclick: () => submit(collect()),
         }, "Send answer")));
     }
