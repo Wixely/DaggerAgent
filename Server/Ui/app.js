@@ -131,8 +131,9 @@ const els = {
   triggersOptionsForm: $("triggers-options-form"),
   triggersSourcesList: $("triggers-sources-list"),
   btnTriggerAdd: $("btn-trigger-add"),
-  banterStatus: $("banter-status"),
+  banterIdentityForm: $("banter-identity-form"),
   banterEnrol: $("banter-enrol"),
+  banterStatus: $("banter-status"),
   banterConfigForm: $("banter-config-form"),
   toolsList: $("tools-list"),
   commandsList: $("commands-list"),
@@ -937,7 +938,11 @@ function renderTriggerOptions() {
 
   const saveBtn = el("button", { type: "submit", class: "btn btn-sm btn-primary" }, "Save options");
   form.appendChild(el("div", { class: "endpoint-actions" }, saveBtn));
-  form.addEventListener("submit", async (ev) => {
+  // The <form> is static markup that survives replaceChildren(), so this REPLACES the
+  // previous render's handler rather than stacking another one. addEventListener here
+  // would leave every earlier handler live, each closing over its own detached inputs
+  // and POSTing that render's stale values alongside the current ones.
+  form.onsubmit = async (ev) => {
     ev.preventDefault();
     const body = {
       enabled: enabledF.inp.checked,
@@ -957,7 +962,7 @@ function renderTriggerOptions() {
       });
       await loadTriggers();
     } catch (e) { showToast("Save failed: " + e.message); }
-  });
+  };
 }
 
 function renderTriggerSources() {
@@ -1150,10 +1155,26 @@ function addTriggerSourceForm() {
 
 // ───────────────────────────── banter (room-server connection) ─────────────────────────────
 //
-// Manages the service-hosted Banter connection: live status with connect/disconnect, the
-// enrolment box (paste a one-time code, get an identity and a key fingerprint back), and the
-// config section that persists into runtime-config.json. `dagger banter` remains the
-// standalone equivalent; this tab is the same thing without a second process.
+// Laid out in the order the steps actually depend on each other, which is not the order they
+// used to appear in. Enrolment redeems a one-time code AGAINST a specific server and comes
+// back with the nick that server assigned, so the server address has to be right BEFORE you
+// enrol, and a credential has to exist before Connect has anything to offer. The old layout
+// led with Connect and buried the Server field underneath the enrolment box — the reverse of
+// the dependency, which left people enrolling against whatever address was already saved.
+//
+//   1. Server & identity  →  2. Enrol this machine  →  3. Connect  →  room settings
+//
+// Room settings sit after Connect deliberately: model, prompt and the announced attributes all
+// have workable defaults, so nothing in that card is on the path to getting into a room.
+//
+// `dagger banter` remains the standalone equivalent; this tab is the same thing without a
+// second process.
+
+// Step 2 posts the server and key path sitting in step 1's boxes rather than the saved ones —
+// enrolling against the address you can see is the whole point of putting step 1 first, and a
+// successful enrolment persists both anyway. Set by renderBanterIdentity and read by the Enrol
+// button; the two always render together in loadBanter, so it cannot go stale.
+let banterIdentityInputs = null;
 
 async function loadBanter() {
   try {
@@ -1162,12 +1183,192 @@ async function loadBanter() {
     // Endp tab having been opened first.
     try { state.banterEndpoints = (await api("/endpoints")).items || []; }
     catch { state.banterEndpoints = []; }
-    renderBanterStatus();
+    renderBanterIdentity();
     renderBanterEnrol();
+    renderBanterStatus();
     renderBanterConfig();
   } catch (e) { console.warn("banter load failed", e); }
 }
 
+// One numbered card per step. `n` may be null for the unnumbered trailing settings card —
+// numbering that one would imply it stands between the user and a working connection.
+function banterStep(n, title, ...headExtras) {
+  const card = el("div", { class: "banter-step" });
+  const head = el("div", { class: "banter-step-head" });
+  if (n !== null) head.appendChild(el("span", { class: "banter-step-num" }, String(n)));
+  head.appendChild(el("span", { class: "banter-step-title" }, title));
+  for (const extra of headExtras) if (extra) head.appendChild(extra);
+  card.appendChild(head);
+  return card;
+}
+
+const banterBlurb = (text) => el("p", { class: "banter-step-blurb" }, text);
+
+// Field builders shared by both Banter forms. Module-level rather than nested inside one
+// render because step 1 and the settings card are built separately.
+function banterField(label, attrs) {
+  const a = attrs || {};
+  const id = fieldId("bnf");
+  if (a.type === "checkbox") {
+    const wrap = el("div", { class: "form-check form-switch" });
+    const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
+    wrap.appendChild(inp);
+    wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
+    return { wrap, inp };
+  }
+  const wrap = el("div", {});
+  wrap.appendChild(el("label", { for: id }, label));
+  const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
+  wrap.appendChild(inp);
+  return { wrap, inp };
+}
+
+function banterSelectField(label, options, value) {
+  const id = fieldId("bnf");
+  const wrap = el("div", {});
+  wrap.appendChild(el("label", { for: id }, label));
+  const inp = el("select", { class: "form-select form-select-sm", id });
+  for (const o of options) {
+    const opt = el("option", { value: o }, o);
+    if (o === value) opt.selected = true;
+    inp.appendChild(opt);
+  }
+  wrap.appendChild(inp);
+  return { wrap, inp };
+}
+
+// ── step 1: where this agent logs in, and as whom ──
+function renderBanterIdentity() {
+  const form = els.banterIdentityForm;
+  form.replaceChildren();
+  const cfg = (state.banter && state.banter.config) || {};
+
+  const serverF = banterField("Server", {
+    value: cfg.server ?? "tcp://127.0.0.1:7770", placeholder: "tcp://host:7770",
+    autocomplete: "off", spellcheck: "false",
+  });
+  const userF = banterField("User", { value: cfg.user ?? "dagger", autocomplete: "off" });
+  const keyFileF = banterField("Key file path", { value: cfg.keyFile ?? "banter.key", autocomplete: "off" });
+  const passF = banterField(cfg.hasPassword ? "Password (set — blank keeps it)" : "Password (blank = key login)", {
+    type: "password", autocomplete: "new-password", placeholder: cfg.hasPassword ? "••••••" : "",
+  });
+
+  const card = banterStep(1, "Server & identity");
+  card.appendChild(banterBlurb(
+    "Which Banter server to log in to, and as whom. On a fresh setup the server address is the " +
+    "only box that matters here — step 2 fills the user in, because the server is what picks " +
+    "the nick."));
+  const fields = el("div", { class: "banter-fields" });
+  fields.appendChild(el("div", { class: "row-2" }, serverF.wrap, userF.wrap));
+  fields.appendChild(el("div", { class: "row-2" }, keyFileF.wrap, passF.wrap));
+  card.appendChild(fields);
+  card.appendChild(el("div", { class: "banter-actions" },
+    el("button", { type: "submit", class: "btn btn-sm btn-primary" }, "Save")));
+  form.appendChild(card);
+
+  banterIdentityInputs = { server: serverF.inp, keyFile: keyFileF.inp };
+
+  // Property assignment, not addEventListener: this <form> is static markup that survives
+  // replaceChildren(), so a listener would stack one per render, each closing over its own
+  // detached inputs and re-POSTing that render's stale values.
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = {
+      server: serverF.inp.value.trim(),
+      user: userF.inp.value.trim(),
+      keyFile: keyFileF.inp.value.trim(),
+    };
+    // A blank password box means "leave it alone" — typing sets it, enrolment clears it.
+    if (passF.inp.value.length > 0) body.password = passF.inp.value;
+    try {
+      await api("/banter/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      showToast("Saved.");
+      await loadBanter();
+    } catch (e) { showToast("Save failed: " + e.message); }
+  };
+}
+
+// ── step 2: trade a one-time code for a key this machine keeps ──
+function renderBanterEnrol() {
+  const c = els.banterEnrol;
+  c.replaceChildren();
+  const cfg = (state.banter && state.banter.config) || {};
+
+  if (cfg.keyPresent) {
+    const done = banterStep(2, "Enrol this machine",
+      el("span", { class: "badge bg-success" }, "done"));
+    done.appendChild(banterBlurb(
+      `A key already exists at ${cfg.keyFile}` +
+      (cfg.keyFingerprint ? ` (${cfg.keyFingerprint})` : "") +
+      ". Enrolling again needs that file moved aside first — overwriting it would strand the " +
+      "identity it belongs to."));
+    c.appendChild(done);
+    return;
+  }
+
+  const card = banterStep(2, "Enrol this machine");
+  card.appendChild(banterBlurb(
+    "Paste the one-time code from the Banter client's agents page. This machine makes its own " +
+    "key, sends only the public half, and keeps the private half at the key path in step 1. " +
+    "The code is redeemed against the server named up there, so get that right first. Skip " +
+    "this step only if you are logging in with a password instead."));
+
+  const codeId = fieldId("bnt");
+  const row = el("div", { class: "banter-fields banter-enrol-row" });
+  const codeWrap = el("div", {});
+  codeWrap.appendChild(el("label", { for: codeId }, "Enrolment code"));
+  const codeInput = el("input", {
+    class: "form-control form-control-sm", id: codeId,
+    placeholder: "banter-enrol-…", autocomplete: "off", spellcheck: "false",
+  });
+  codeWrap.appendChild(codeInput);
+  row.appendChild(codeWrap);
+
+  const enrolBtn = el("button", { class: "btn btn-sm btn-primary", type: "button" }, "Enrol");
+  row.appendChild(enrolBtn);
+  card.appendChild(row);
+
+  const result = el("div", { class: "banter-meta" });
+  enrolBtn.addEventListener("click", async () => {
+    const code = codeInput.value.trim();
+    if (!code) { showToast("Paste the enrolment code first."); return; }
+    enrolBtn.disabled = true;
+    enrolBtn.textContent = "Enrolling…";
+    try {
+      // Live values from step 1, so a server typed but not yet saved is still the one the code
+      // is redeemed against; a successful enrolment persists that server and key path itself.
+      const r = await api("/banter/enrol", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          server: banterIdentityInputs?.server.value.trim() || undefined,
+          keyFile: banterIdentityInputs?.keyFile.value.trim() || undefined,
+        }),
+      });
+      result.classList.remove("text-danger");
+      result.textContent =
+        `Enrolled as '${r.nick}' — fingerprint ${r.fingerprint}. The code is spent; ` +
+        `the key stays on this machine${r.dpapiProtected ? " (DPAPI-protected)" : ""}.`;
+      showToast(`Enrolled as ${r.nick}`);
+      await loadBanter();
+    } catch (e) {
+      result.classList.add("text-danger");
+      result.textContent = "Enrolment failed: " + e.message;
+      enrolBtn.disabled = false;
+      enrolBtn.textContent = "Enrol";
+    }
+  });
+
+  card.appendChild(result);
+  c.appendChild(card);
+}
+
+// ── step 3: the live connection ──
 function renderBanterStatus() {
   const c = els.banterStatus;
   c.replaceChildren();
@@ -1176,7 +1377,6 @@ function renderBanterStatus() {
   const connected = st.state === "connected";
   const live = connected || st.state === "reconnecting";   // an agent object exists server-side
 
-  const card = el("div", { class: "endpoint-card" });
   const badgeClass =
     connected ? "bg-success" :
     st.state === "reconnecting" || st.state === "connecting" ? "bg-warning" :
@@ -1184,9 +1384,7 @@ function renderBanterStatus() {
   const badgeText = st.state === "reconnecting" && st.reconnectAttempt > 0
     ? `reconnecting (attempt ${st.reconnectAttempt})`
     : (st.state || "disconnected");
-  card.appendChild(el("div", { class: "endpoint-head" },
-    el("span", { class: "endpoint-name" }, "Banter connection"),
-    el("span", { class: `badge ${badgeClass}` }, badgeText)));
+  const card = banterStep(3, "Connect", el("span", { class: `badge ${badgeClass}` }, badgeText));
 
   const meta = [];
   if (live) {
@@ -1198,9 +1396,9 @@ function renderBanterStatus() {
     meta.push(`would connect as ${cfg.user} to ${cfg.server}`);
     if (cfg.keyPresent) meta.push(cfg.keyFingerprint ? `key ${cfg.keyFingerprint}` : "key file present but unusable");
     else if (cfg.hasPassword) meta.push("password login (consider enrolling)");
-    else meta.push("no credential yet — enrol below");
+    else meta.push("no credential yet — finish step 2 first");
   }
-  card.appendChild(el("div", { class: "endpoint-meta" }, meta.join(" · ")));
+  card.appendChild(el("div", { class: "banter-meta" }, meta.join(" · ")));
 
   // What the server actually granted, next to what the "Requested settings" asked for.
   // A difference is not an error — it is an admin's override doing its job.
@@ -1210,27 +1408,32 @@ function renderBanterStatus() {
       g.locality !== (cfg.locality || "local") ||
       g.clearance !== (cfg.clearance || "sensitive") ||
       (g.skills || []).join(",") !== (cfg.skills || []).join(",");
-    card.appendChild(el("div", { class: "endpoint-meta" },
+    card.appendChild(el("div", { class: "banter-meta" },
       `granted: ${g.locality} · ${g.clearance} · skills [${(g.skills || []).join(", ")}] · ` +
       `cost ${g.costTier} · ${g.workMode}` +
       (overridden ? " — differs from the requested settings (admin override in effect)" : "")));
   }
 
   if (st.state === "reconnecting") {
-    card.appendChild(el("div", { class: "endpoint-meta" },
+    card.appendChild(el("div", { class: "banter-meta" },
       "The server is unreachable. Redialling with backoff; on success the agent re-authenticates, " +
       "rejoins its rooms and re-announces its attributes by itself."));
   }
   if (st.state === "evicted") {
-    card.appendChild(el("div", { class: "endpoint-meta text-danger" },
+    card.appendChild(el("div", { class: "banter-meta text-danger" },
       `The server ended the session: ${st.evictedReason || "no reason given"}. ` +
       "The identity was revoked or reissued, so reconnecting cannot help — move the old key aside " +
       "and enrol again with a fresh code."));
   } else if (st.lastError && !connected) {
-    card.appendChild(el("div", { class: "endpoint-meta text-danger" }, `last error: ${st.lastError}`));
+    card.appendChild(el("div", { class: "banter-meta text-danger" }, `last error: ${st.lastError}`));
+  }
+  if (live) {
+    card.appendChild(el("div", { class: "banter-meta" },
+      "A live connection keeps the settings it started with — disconnect and reconnect to apply " +
+      "an edit made above or below."));
   }
 
-  const actions = el("div", { class: "endpoint-actions" });
+  const actions = el("div", { class: "banter-actions" });
   const mainBtn = el("button", {
     class: `btn btn-sm ${live ? "btn-outline-danger" : "btn-primary"}`,
     type: "button",
@@ -1262,115 +1465,14 @@ function renderBanterStatus() {
   }
 }
 
-function renderBanterEnrol() {
-  const c = els.banterEnrol;
-  c.replaceChildren();
-  const cfg = (state.banter && state.banter.config) || {};
-
-  const card = el("div", { class: "endpoint-card" });
-  card.appendChild(el("div", { class: "endpoint-head" },
-    el("span", { class: "endpoint-name" }, "Enrol this machine")));
-
-  if (cfg.keyPresent) {
-    card.appendChild(el("div", { class: "endpoint-meta" },
-      `A key already exists at ${cfg.keyFile}` +
-      (cfg.keyFingerprint ? ` (${cfg.keyFingerprint})` : "") +
-      ". Enrolling again needs that file moved aside first — overwriting it would strand the identity it belongs to."));
-    c.appendChild(card);
-    return;
-  }
-
-  card.appendChild(el("div", { class: "endpoint-meta" },
-    "Paste the one-time code from the Banter client's agents page. This machine makes its own key, " +
-    "sends only the public half, and keeps the private half at the configured key path."));
-
-  const codeId = fieldId("bnt");
-  const wrap = el("div", { class: "endpoint-form", style: "display:flex;" });
-  const codeWrap = el("div", {});
-  codeWrap.appendChild(el("label", { for: codeId }, "Enrolment code"));
-  const codeInput = el("input", {
-    class: "form-control form-control-sm", id: codeId,
-    placeholder: "banter-enrol-…", autocomplete: "off", spellcheck: "false",
-  });
-  codeWrap.appendChild(codeInput);
-  wrap.appendChild(codeWrap);
-
-  const enrolBtn = el("button", { class: "btn btn-sm btn-primary", type: "button" }, "Enrol");
-  const result = el("div", { class: "endpoint-meta" });
-  enrolBtn.addEventListener("click", async () => {
-    const code = codeInput.value.trim();
-    if (!code) { showToast("Paste the enrolment code first."); return; }
-    enrolBtn.disabled = true;
-    enrolBtn.textContent = "Enrolling…";
-    try {
-      const r = await api("/banter/enrol", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      });
-      result.classList.remove("text-danger");
-      result.textContent =
-        `Enrolled as '${r.nick}' — fingerprint ${r.fingerprint}. The code is spent; ` +
-        `the key stays on this machine${r.dpapiProtected ? " (DPAPI-protected)" : ""}.`;
-      showToast(`Enrolled as ${r.nick}`);
-      await loadBanter();
-    } catch (e) {
-      result.classList.add("text-danger");
-      result.textContent = "Enrolment failed: " + e.message;
-      enrolBtn.disabled = false;
-      enrolBtn.textContent = "Enrol";
-    }
-  });
-
-  wrap.appendChild(el("div", { class: "endpoint-actions" }, enrolBtn));
-  card.appendChild(wrap);
-  card.appendChild(result);
-  c.appendChild(card);
-}
-
+// ── room settings: everything with a workable default, so none of it blocks step 3 ──
 function renderBanterConfig() {
   const form = els.banterConfigForm;
   form.replaceChildren();
   const cfg = (state.banter && state.banter.config) || {};
   const connected = state.banter && state.banter.status && state.banter.status.state === "connected";
 
-  const field = (label, attrs) => {
-    const a = attrs || {};
-    const id = fieldId("bnf");
-    if (a.type === "checkbox") {
-      const wrap = el("div", { class: "form-check form-switch" });
-      const inp = el("input", Object.assign({ class: "form-check-input", role: "switch", id }, a));
-      wrap.appendChild(inp);
-      wrap.appendChild(el("label", { class: "form-check-label", for: id }, label));
-      return { wrap, inp };
-    }
-    const wrap = el("div", {});
-    wrap.appendChild(el("label", { for: id }, label));
-    const inp = el("input", Object.assign({ class: "form-control form-control-sm", id }, a));
-    wrap.appendChild(inp);
-    return { wrap, inp };
-  };
-  const selectField = (label, options, value) => {
-    const id = fieldId("bnf");
-    const wrap = el("div", {});
-    wrap.appendChild(el("label", { for: id }, label));
-    const inp = el("select", { class: "form-select form-select-sm", id });
-    for (const o of options) {
-      const opt = el("option", { value: o }, o);
-      if (o === value) opt.selected = true;
-      inp.appendChild(opt);
-    }
-    wrap.appendChild(inp);
-    return { wrap, inp };
-  };
-
-  const serverF = field("Server", { value: cfg.server ?? "tcp://127.0.0.1:7770" });
-  const userF = field("User", { value: cfg.user ?? "dagger" });
-  const roomsF = field("Rooms to join (comma-separated)", { value: (cfg.rooms || []).join(", "), placeholder: "#main" });
-  const keyFileF = field("Key file path", { value: cfg.keyFile ?? "banter.key" });
-  const passF = field(cfg.hasPassword ? "Password (set — leave blank to keep)" : "Password (blank = key login)", {
-    type: "password", autocomplete: "new-password", placeholder: cfg.hasPassword ? "••••••" : "",
-  });
+  const roomsF = banterField("Rooms to join (comma-separated)", { value: (cfg.rooms || []).join(", "), placeholder: "#main" });
   const endpointId = fieldId("bnf");
   const endpointWrap = el("div", {});
   endpointWrap.appendChild(el("label", { for: endpointId }, "LLM endpoint"));
@@ -1382,22 +1484,22 @@ function renderBanterConfig() {
     endpointSel.appendChild(opt);
   }
   endpointWrap.appendChild(endpointSel);
-  const modelF = field("Model (blank = endpoint default)", { value: cfg.model ?? "" });
-  const skillsF = field("Skills (comma-separated)", { value: (cfg.skills || []).join(", "), placeholder: "code, tools" });
-  const localityF = selectField("Locality", ["local", "frontier"], cfg.locality ?? "local");
-  const clearanceF = selectField("Clearance", ["public", "internal", "sensitive"], cfg.clearance ?? "sensitive");
-  const costF = field("Cost tier (lower is cheaper)", { type: "number", value: cfg.costTier ?? 1, min: 0 });
-  const descF = field("Roster description (blank = auto)", { value: cfg.description ?? "" });
-  const answerAllF = field("Answer every message (mention-mode rooms only)", { type: "checkbox" });
+  const modelF = banterField("Model (blank = endpoint default)", { value: cfg.model ?? "" });
+  const skillsF = banterField("Skills (comma-separated)", { value: (cfg.skills || []).join(", "), placeholder: "code, tools" });
+  const localityF = banterSelectField("Locality", ["local", "frontier"], cfg.locality ?? "local");
+  const clearanceF = banterSelectField("Clearance", ["public", "internal", "sensitive"], cfg.clearance ?? "sensitive");
+  const costF = banterField("Cost tier (lower is cheaper)", { type: "number", value: cfg.costTier ?? 1, min: 0 });
+  const descF = banterField("Roster description (blank = auto)", { value: cfg.description ?? "" });
+  const answerAllF = banterField("Answer every message (mention-mode rooms only)", { type: "checkbox" });
   answerAllF.inp.checked = !!cfg.respondToEveryMessage;
-  const roomToolsF = field("Offer the room's tools (ask_operator, delegator room actions)", { type: "checkbox" });
+  const roomToolsF = banterField("Offer the room's tools (ask_operator, delegator room actions)", { type: "checkbox" });
   roomToolsF.inp.checked = cfg.roomTools !== false;
-  const askTimeoutF = field("Ask timeout (seconds an ask_operator waits for an answer)", {
+  const askTimeoutF = banterField("Ask timeout (seconds an ask_operator waits for an answer)", {
     type: "number", value: cfg.askTimeoutSeconds ?? 300, min: 10,
   });
-  const delegatorF = field("Ask to be the room's delegator", { type: "checkbox" });
+  const delegatorF = banterField("Ask to be the room's delegator", { type: "checkbox" });
   delegatorF.inp.checked = !!cfg.wantsDelegator;
-  const autoConnectF = field("Connect automatically when the service starts", { type: "checkbox" });
+  const autoConnectF = banterField("Connect automatically when the service starts", { type: "checkbox" });
   autoConnectF.inp.checked = !!cfg.autoConnect;
 
   const promptId = fieldId("bnf");
@@ -1407,45 +1509,45 @@ function renderBanterConfig() {
   promptArea.value = cfg.systemPrompt ?? "";
   promptWrap.appendChild(promptArea);
 
-  // Two groups, split by who decides. Connection & answering is entirely this side's
-  // business; the announced attributes are REQUESTS the server weighs against the admin's
-  // agent settings, delegator election, dispatch mode and room rules.
-  form.appendChild(el("div", { class: "endpoint-head" },
-    el("span", { class: "endpoint-name" }, "Connection & answering")));
-  form.appendChild(el("p", { class: "text-muted small" },
-    "How DaggerAgent reaches the server and produces replies. Applied on the next connect."));
-  form.appendChild(el("div", { class: "row-2" }, serverF.wrap, userF.wrap));
-  form.appendChild(keyFileF.wrap);
-  form.appendChild(passF.wrap);
-  form.appendChild(el("div", { class: "row-2" }, endpointWrap, modelF.wrap));
-  form.appendChild(promptWrap);
-  form.appendChild(roomToolsF.wrap);
-  form.appendChild(askTimeoutF.wrap);
-  form.appendChild(autoConnectF.wrap);
+  // Two groups, split by who decides. Answering is entirely this side's business; the
+  // announced attributes are REQUESTS the server weighs against the admin's agent settings,
+  // delegator election, dispatch mode and room rules.
+  const card = banterStep(null, "Room settings");
+  card.appendChild(banterBlurb(
+    "All optional — each of these already has a working default. Applied on the next connect."));
 
-  form.appendChild(el("div", { class: "endpoint-head", style: "margin-top: 10px;" },
-    el("span", { class: "endpoint-name" }, "Requested settings")));
-  form.appendChild(el("p", { class: "text-muted small" },
+  const answering = el("div", { class: "banter-fields" });
+  answering.appendChild(el("div", { class: "row-2" }, endpointWrap, modelF.wrap));
+  answering.appendChild(promptWrap);
+  answering.appendChild(roomToolsF.wrap);
+  answering.appendChild(askTimeoutF.wrap);
+  answering.appendChild(autoConnectF.wrap);
+  card.appendChild(answering);
+
+  card.appendChild(el("div", { class: "banter-subhead" }, "Requested settings"));
+  card.appendChild(banterBlurb(
     "Announced to the Banter server on connect — requests, not guarantees. The server has the " +
     "final say: an admin's agent settings, delegator election, the room's dispatch mode, " +
     "clearance rules and rate guardrails can override or refuse any of them. The agents page " +
     "in the Banter client shows what actually applies."));
-  form.appendChild(roomsF.wrap);
-  form.appendChild(skillsF.wrap);
-  form.appendChild(el("div", { class: "row-2" }, localityF.wrap, clearanceF.wrap));
-  form.appendChild(el("div", { class: "row-2" }, costF.wrap, descF.wrap));
-  form.appendChild(answerAllF.wrap);
-  form.appendChild(delegatorF.wrap);
+  const requested = el("div", { class: "banter-fields" });
+  requested.appendChild(roomsF.wrap);
+  requested.appendChild(skillsF.wrap);
+  requested.appendChild(el("div", { class: "row-2" }, localityF.wrap, clearanceF.wrap));
+  requested.appendChild(el("div", { class: "row-2" }, costF.wrap, descF.wrap));
+  requested.appendChild(answerAllF.wrap);
+  requested.appendChild(delegatorF.wrap);
+  card.appendChild(requested);
 
-  const saveBtn = el("button", { type: "submit", class: "btn btn-sm btn-primary" }, "Save");
-  form.appendChild(el("div", { class: "endpoint-actions" }, saveBtn));
-  form.addEventListener("submit", async (ev) => {
+  card.appendChild(el("div", { class: "banter-actions" },
+    el("button", { type: "submit", class: "btn btn-sm btn-primary" }, "Save room settings")));
+  form.appendChild(card);
+
+  // Same static-form hazard as step 1: replace the handler, never stack it.
+  form.onsubmit = async (ev) => {
     ev.preventDefault();
     const body = {
-      server: serverF.inp.value.trim(),
-      user: userF.inp.value.trim(),
       rooms: roomsF.inp.value.split(",").map(s => s.trim()).filter(Boolean),
-      keyFile: keyFileF.inp.value.trim(),
       endpointId: endpointSel.value,
       model: modelF.inp.value,
       skills: skillsF.inp.value.split(",").map(s => s.trim()).filter(Boolean),
@@ -1460,8 +1562,6 @@ function renderBanterConfig() {
       askTimeoutSeconds: Number(askTimeoutF.inp.value) || 300,
       systemPrompt: promptArea.value,
     };
-    // A blank password box means "leave it alone" — typing sets it, and enrolment clears it.
-    if (passF.inp.value.length > 0) body.password = passF.inp.value;
     try {
       await api("/banter/config", {
         method: "POST",
@@ -1473,7 +1573,7 @@ function renderBanterConfig() {
         : "Saved.");
       await loadBanter();
     } catch (e) { showToast("Save failed: " + e.message); }
-  });
+  };
 }
 
 async function loadTools() {

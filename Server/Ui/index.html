@@ -161,10 +161,14 @@
           </div>
           <div id="triggers-sources-list" class="endpoints-list"></div>
         </div>
-        <div id="tab-banter" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-banter" tabindex="0">
-          <div id="banter-status" class="endpoints-list"></div>
-          <div id="banter-enrol" class="endpoints-list"></div>
-          <form id="banter-config-form" class="endpoint-form banter-config-form"></form>
+        <!-- Ordered as the steps actually depend on each other: point at a server and say who
+             you are, enrol this machine against THAT server, then connect. Room settings come
+             last because none of them are needed to get connected. -->
+        <div id="tab-banter" class="tab-pane banter-pane" role="tabpanel" aria-labelledby="tab-btn-banter" tabindex="0">
+          <form id="banter-identity-form"></form>
+          <div id="banter-enrol"></div>
+          <div id="banter-status"></div>
+          <form id="banter-config-form"></form>
         </div>
         <div id="tab-tools" class="tab-pane" role="tabpanel" aria-labelledby="tab-btn-tools" tabindex="0">
           <div id="tools-list" class="tools-list"></div>

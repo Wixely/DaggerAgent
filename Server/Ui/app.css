@@ -570,6 +570,69 @@ body { font-feature-settings: "ss01"; }
   font-size: 0.82rem;
 }
 
+/* ── Banter tab ─────────────────────────────────────────────────────────────────
+   Self-contained on purpose. The step cards and the two <form>s sit directly in
+   the pane, NOT inside .endpoints-list, so not one of the .endpoint-* rules above
+   ever reached them: the fields stacked flush against each other with default-size
+   labels and .row-2 never went side by side. Everything the tab needs is here. */
+.banter-pane { display: flex; flex-direction: column; gap: 10px; }
+
+.banter-step {
+  border: 1px solid var(--line); border-radius: 11px;
+  padding: 12px 14px; background: var(--surface);
+  font-size: 0.82rem;
+}
+.banter-step-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.banter-step-num {
+  flex: 0 0 auto; width: 19px; height: 19px; border-radius: 999px;
+  background: var(--surface-soft); color: var(--muted);
+  font-size: 0.68rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.banter-step-title { font-weight: 600; flex: 1; }
+.banter-step-blurb {
+  color: var(--muted); font-size: 0.74rem; line-height: 1.5;
+  margin: 0 0 12px;
+}
+.banter-step-blurb:last-child { margin-bottom: 0; }
+
+/* The gap here is what stops the tab feeling crowded — every field wrapper is a
+   plain <div>, so without it labels sit hard against the control above. */
+.banter-fields { display: flex; flex-direction: column; gap: 11px; }
+.banter-fields .row-2 { display: flex; gap: 10px; flex-wrap: wrap; }
+.banter-fields .row-2 > * { flex: 1 1 200px; min-width: 0; }
+.banter-fields label:not(.form-check-label) {
+  display: block; margin: 0 0 4px;
+  font-size: 0.7rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.banter-fields .form-check { display: flex; align-items: center; margin: 0; }
+.banter-fields .form-check-label { font-size: 0.78rem; line-height: 1.4; }
+.banter-fields textarea.form-control { min-height: 64px; }
+
+/* Enrolment is one box and its button; keep them on a line and bottom-aligned so
+   the button sits on the input's baseline rather than its label's. */
+.banter-enrol-row { flex-direction: row; align-items: flex-end; flex-wrap: wrap; }
+.banter-enrol-row > div:first-child { flex: 1 1 240px; min-width: 0; }
+
+.banter-subhead {
+  font-weight: 600; font-size: 0.78rem;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  margin-bottom: 6px;
+}
+.banter-meta {
+  font-size: 0.73rem; color: var(--muted); line-height: 1.5;
+  margin-top: 5px; overflow-wrap: anywhere;
+}
+.banter-actions { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+
+/* The status pill asked for these three and nothing defined them, so connected,
+   reconnecting and evicted all came out as the same grey .badge. */
+.badge.bg-success { border-color: transparent; background: var(--success); color: #0f1a14; }
+.badge.bg-warning { border-color: transparent; background: var(--warning); color: #241a0c; }
+.badge.bg-danger  { border-color: transparent; background: var(--danger); color: #fff; }
+
 .composer-endpoint {
   font-size: 0.8rem; min-width: 120px; flex: 1.5;
 }
