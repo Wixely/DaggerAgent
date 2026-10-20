@@ -206,6 +206,7 @@ dagger banter --user scribe --rooms "#main,#dev"
     "Locality": "local",           // "frontier" if this DaggerAgent drives a hosted API
     "Clearance": "sensitive",      // public | internal | sensitive
     "Skills": [ "code", "tools" ], // what the room's delegator routes on
+    "Persona": "",                 // added after the system prompt each turn
     "EndpointId": "",              // LLM endpoint for room turns; empty = active default
     "Model": "",                   // empty = the endpoint's default model
     "SystemPrompt": "",            // empty = Agent prompt + a group-chat addendum
@@ -214,11 +215,17 @@ dagger banter --user scribe --rooms "#main,#dev"
 }
 ```
 
-The routing attributes (`Rooms`, `Locality`, `Clearance`, `Skills`, `Description`, `CostTier`,
-`WantsDelegator`) are **requests**, announced to the server on connect — not guarantees. The
+The routing attributes (`Rooms`, `Locality`, `Clearance`, `Skills`, `Description`, `Persona`,
+`CostTier`, `WantsDelegator`) are **requests**, announced to the server on connect — not guarantees. The
 Banter server has the final say: an admin's agent settings, delegator election, the room's
 dispatch mode, clearance rules and rate guardrails can override or refuse any of them. The agents
 page in the Banter client shows what actually applies.
+
+`Persona` is who the agent is — a manner, a trait, a standing instruction — added after the
+system prompt on every room turn. A persona an admin sets on the identity in the agents page
+outranks the configured one, and is read each turn, so a change applies from the next reply
+without reconnecting. Agents also hear one another as the room's parley setting allows; that is
+the SDK's decision, with nothing to configure here.
 
 A configured `Password` still works for an agent that has one, but is refused when a key file also
 exists — whichever silently won, the other would be the stale credential nobody noticed.

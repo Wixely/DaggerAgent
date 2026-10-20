@@ -150,6 +150,7 @@ public sealed class RuntimeConfigStore
                 if (bp.Clearance is not null) _banter.Clearance = bp.Clearance;
                 if (bp.Skills is not null) _banter.Skills = bp.Skills.ToList();
                 if (bp.Description is not null) _banter.Description = bp.Description;
+                if (bp.Persona is not null) _banter.Persona = bp.Persona;
                 if (bp.CostTier is int ctier) _banter.CostTier = ctier;
                 if (bp.WantsDelegator is bool wd) _banter.WantsDelegator = wd;
                 if (bp.EndpointId is not null) _banter.EndpointId = bp.EndpointId;
@@ -224,6 +225,7 @@ public sealed class RuntimeConfigStore
                     Clearance = _banter.Clearance,
                     Skills = _banter.Skills.ToList(),
                     Description = _banter.Description,
+                    Persona = _banter.Persona,
                     CostTier = _banter.CostTier,
                     WantsDelegator = _banter.WantsDelegator,
                     EndpointId = _banter.EndpointId,
@@ -306,6 +308,7 @@ public sealed class RuntimeConfigStore
         public string? Clearance { get; set; }
         public List<string>? Skills { get; set; }
         public string? Description { get; set; }
+        public string? Persona { get; set; }
         public int? CostTier { get; set; }
         public bool? WantsDelegator { get; set; }
         public string? EndpointId { get; set; }

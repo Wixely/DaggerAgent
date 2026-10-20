@@ -63,7 +63,7 @@ public sealed class BanterConnectionService : IHostedService, IAsyncDisposable
     /// <summary>What the server actually granted, as opposed to what the config requested.</summary>
     public sealed record GrantedView(
         string Locality, string Clearance, IReadOnlyList<string> Skills,
-        string Description, int CostTier, bool WantsDelegator, string WorkMode);
+        string Description, int CostTier, bool WantsDelegator, string WorkMode, string Persona);
 
     public sealed record StatusView(
         string State, int ReconnectAttempt, string? Server, string? User,
@@ -205,7 +205,8 @@ public sealed class BanterConnectionService : IHostedService, IAsyncDisposable
         granted.Description,
         granted.CostTier,
         granted.WantsDelegator,
-        granted.WorkMode.ToString());
+        granted.WorkMode.ToString(),
+        granted.Persona);
 
     /// <summary>
     /// The server ended the session on purpose: the identity was revoked, re-keyed or removed.

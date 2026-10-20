@@ -96,6 +96,7 @@ public static class BanterSetup
         Clearance = ParseClearance(options.Clearance),
         Skills = options.Skills.Count > 0 ? options.Skills : ["code", "tools"],
         Description = options.Description.Length > 0 ? options.Description : $"DaggerAgent ({model})",
+        Persona = options.Persona,
         CostTier = options.CostTier,
         WantsDelegator = options.WantsDelegator,
         RoomTools = options.RoomTools,

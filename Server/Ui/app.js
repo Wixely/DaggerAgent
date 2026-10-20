@@ -1407,10 +1407,12 @@ function renderBanterStatus() {
     const overridden =
       g.locality !== (cfg.locality || "local") ||
       g.clearance !== (cfg.clearance || "sensitive") ||
-      (g.skills || []).join(",") !== (cfg.skills || []).join(",");
+      (g.skills || []).join(",") !== (cfg.skills || []).join(",") ||
+      (g.persona || "") !== (cfg.persona || "");
     card.appendChild(el("div", { class: "banter-meta" },
       `granted: ${g.locality} · ${g.clearance} · skills [${(g.skills || []).join(", ")}] · ` +
       `cost ${g.costTier} · ${g.workMode}` +
+      (g.persona ? ` · persona "${g.persona.length > 60 ? g.persona.slice(0, 60) + "…" : g.persona}"` : "") +
       (overridden ? " — differs from the requested settings (admin override in effect)" : "")));
   }
 
@@ -1490,6 +1492,13 @@ function renderBanterConfig() {
   const clearanceF = banterSelectField("Clearance", ["public", "internal", "sensitive"], cfg.clearance ?? "sensitive");
   const costF = banterField("Cost tier (lower is cheaper)", { type: "number", value: cfg.costTier ?? 1, min: 0 });
   const descF = banterField("Roster description (blank = auto)", { value: cfg.description ?? "" });
+  const personaId = fieldId("bnf");
+  const personaWrap = el("div", {});
+  personaWrap.appendChild(el("label", { for: personaId },
+    "Persona (added after the system prompt each turn; one set on the agents page wins)"));
+  const personaArea = el("textarea", { class: "form-control form-control-sm", rows: 2, id: personaId });
+  personaArea.value = cfg.persona ?? "";
+  personaWrap.appendChild(personaArea);
   const answerAllF = banterField("Answer every message (mention-mode rooms only)", { type: "checkbox" });
   answerAllF.inp.checked = !!cfg.respondToEveryMessage;
   const roomToolsF = banterField("Offer the room's tools (ask_operator, delegator room actions)", { type: "checkbox" });
@@ -1535,6 +1544,7 @@ function renderBanterConfig() {
   requested.appendChild(skillsF.wrap);
   requested.appendChild(el("div", { class: "row-2" }, localityF.wrap, clearanceF.wrap));
   requested.appendChild(el("div", { class: "row-2" }, costF.wrap, descF.wrap));
+  requested.appendChild(personaWrap);
   requested.appendChild(answerAllF.wrap);
   requested.appendChild(delegatorF.wrap);
   card.appendChild(requested);
@@ -1555,6 +1565,7 @@ function renderBanterConfig() {
       clearance: clearanceF.inp.value,
       costTier: Number(costF.inp.value) || 1,
       description: descF.inp.value,
+      persona: personaArea.value,
       respondToEveryMessage: answerAllF.inp.checked,
       wantsDelegator: delegatorF.inp.checked,
       autoConnect: autoConnectF.inp.checked,

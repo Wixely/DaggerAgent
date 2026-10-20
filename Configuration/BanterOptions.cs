@@ -65,6 +65,13 @@ public sealed class BanterOptions
     /// <summary>Human-readable summary shown in the room's agent roster.</summary>
     public string Description { get; set; } = "";
 
+    /// <summary>
+    /// Who this agent is, as prompt text added after the system prompt on every room turn: a
+    /// manner, a trait, a standing instruction. A request like the rest — a persona an admin
+    /// sets on the identity in the Banter agents page outranks it.
+    /// </summary>
+    public string Persona { get; set; } = "";
+
     /// <summary>Lower is cheaper. A tie-break in delegator election and routing.</summary>
     public int CostTier { get; set; } = 1;
 

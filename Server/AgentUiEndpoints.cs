@@ -389,6 +389,7 @@ public static class AgentUiEndpoints
                     clearance = b.Clearance,
                     skills = b.Skills,
                     description = b.Description,
+                    persona = b.Persona,
                     costTier = b.CostTier,
                     wantsDelegator = b.WantsDelegator,
                     endpointId = b.EndpointId,
@@ -427,6 +428,7 @@ public static class AgentUiEndpoints
                 if (patch.Skills is not null)
                     b.Skills = patch.Skills.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
                 if (patch.Description is not null) b.Description = patch.Description;
+                if (patch.Persona is not null) b.Persona = patch.Persona.Trim();
                 if (patch.CostTier is int ctier && ctier >= 0) b.CostTier = ctier;
                 if (patch.WantsDelegator is bool wd) b.WantsDelegator = wd;
                 if (patch.EndpointId is not null) b.EndpointId = patch.EndpointId.Trim();
@@ -889,6 +891,7 @@ internal sealed record BanterOptionsPatch(
     string? Clearance = null,
     IReadOnlyList<string>? Skills = null,
     string? Description = null,
+    string? Persona = null,
     int? CostTier = null,
     bool? WantsDelegator = null,
     string? EndpointId = null,

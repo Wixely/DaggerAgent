@@ -26,6 +26,10 @@ public sealed class DaggerBanterAgent : BanterAgent
     /// </summary>
     private readonly Dictionary<string, ConversationState> _states = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Each room's system prompt as built, before any persona — so a persona that
+    /// changes or is cleared replaces the old one instead of stacking on it.</summary>
+    private readonly Dictionary<string, string> _basePrompts = new(StringComparer.OrdinalIgnoreCase);
+
     /// <param name="model">Model for room turns; empty lets the endpoint's default decide.</param>
     /// <param name="endpointId">LLM endpoint id; null/empty uses the active default endpoint.</param>
     public DaggerBanterAgent(
@@ -80,7 +84,9 @@ public sealed class DaggerBanterAgent : BanterAgent
         {
             _states[room] = state = _agent.CreateState(_model, _systemPrompt);
             state.EndpointId = _endpointId;
+            _basePrompts[room] = state.SystemPrompt;
         }
+        ApplyPersona(room, state);
 
         // The room's own tools ride along with Dagger's registry rather than being replaced by
         // it (issue #10): ask_operator for structured questions, the delegator's open_side_room /
@@ -128,5 +134,25 @@ public sealed class DaggerBanterAgent : BanterAgent
 
         _log.LogInformation("Banter turn complete: room={Room} jobId={JobId} turns={Turns} tokens={Tokens}",
             room, state.Id, state.TurnsTaken, state.ApproxTokenCount);
+    }
+
+    /// <summary>
+    /// Put the persona in force — an admin's from the agents page, else Banter:Persona — after
+    /// the room's system prompt, as the SDK's own LlmChatAgent does. Read every turn, so an
+    /// admin's change reaches the next answer rather than the next connect. The system prompt is
+    /// the first history message, and compression keeps it there.
+    /// </summary>
+    private void ApplyPersona(string room, ConversationState state)
+    {
+        var basePrompt = _basePrompts[room];
+        var persona = Persona;
+        var prompt = persona.Length > 0 ? $"{basePrompt}\n\n{persona}" : basePrompt;
+        if (prompt == state.SystemPrompt) return;
+
+        state.SystemPrompt = prompt;
+        if (state.History.Count > 0 && state.History[0].Role == ChatRole.System)
+            state.History[0] = new ChatMessage(ChatRole.System, prompt);
+        _log.LogInformation("Banter persona {Change} for room={Room}",
+            persona.Length > 0 ? "applied" : "cleared", room);
     }
 }
