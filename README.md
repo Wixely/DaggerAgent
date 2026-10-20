@@ -1,6 +1,6 @@
 # DaggerAgent
 
-A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs as an interactive REPL, a one-shot CLI, an HTTP service, an ACP agent, or a [Banter](https://github.com/Wixely/Banter) room agent — and is deployable as a Windows Service or a Docker container.
+A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs as an interactive terminal UI (TUI), a one-shot CLI, an HTTP service, an ACP agent, or a [Banter](https://github.com/Wixely/Banter) room agent — and is deployable as a Windows Service or a Docker container.
 
 ![The DaggerAgent web UI: a job transcript with inline tool calls, the composer, and the tool catalogue.](docs/web-ui.png)
 
@@ -8,7 +8,7 @@ A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs as an 
 
 ## Features
 
-- **Modes**: interactive REPL, one-shot CLI, HTTP service (Kestrel), ACP (JSON-RPC over stdio for editors), and [Banter mode](#banter-mode) — DaggerAgent as an agent in a Banter chat room, with one-time-code enrolment and key-backed identity.
+- **Modes**: interactive TUI, one-shot CLI, HTTP service (Kestrel), ACP (JSON-RPC over stdio for editors), and [Banter mode](#banter-mode) — DaggerAgent as an agent in a Banter chat room, with one-time-code enrolment and key-backed identity.
 - **Multi-protocol upstream client**: `OpenAI` (OpenAI itself, Azure OpenAI, LM Studio, vLLM, any OpenAI-compatible endpoint) or `Ollama` (native `/api/chat` via OllamaSharp) — pick with `OpenAI:Provider` in config. Same code, swappable transport.
 - **MCP client**: connects to any number of MCP servers over HTTP (streamable-HTTP transport) **or** stdio (child process); their tools are surfaced to the LLM alongside the built-in tools. See [MCP servers](#mcp-servers).
 - **Built-in tools**:
@@ -31,7 +31,7 @@ A pure-C# .NET 10 LLM agent that talks to OpenAI-protocol endpoints. Runs as an 
 ## Quick start
 
 ```bash
-# Interactive REPL
+# Interactive TUI
 dotnet run
 
 # CLI one-shot
