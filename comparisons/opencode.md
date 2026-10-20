@@ -34,7 +34,7 @@ agent editing things while it is still figuring out what to do.
   you flip mid-session and see in the UI. In Dagger it is configuration you set before the
   job. Same intent; opencode's version is the one a user actually reaches for.
 - **Surface polish and reach.** TUI, desktop app, web console, and installation through
-  npm, Homebrew, Nix and system package managers. Dagger installs by `dotnet publish`.
+  npm, Homebrew, Nix and system package managers. Dagger ships release zips (win-x64, linux-x64) and a GHCR Docker image, but no package-manager install.
 - **Sheer exercise.** 7.5M monthly developers reported as of mid-2026. Every rough edge
   has been hit by someone.
 
@@ -56,8 +56,8 @@ agent editing things while it is still figuring out what to do.
    `ReadOnly`, the tool gates. What is missing is one visible control in the web UI and
    the TUI that flips a job between "look, don't touch" and "go", mid-job, the way
    opencode's Plan/Build does. This is the single highest-value idea in this folder.
-2. **Ship a real installer.** A `dotnet tool install -g` package, a winget manifest, or a
-   published Docker image would remove the biggest practical barrier to anyone trying it.
+2. **Get into a package manager.** Release zips and a public Docker image already exist; a
+   `dotnet tool install -g` package or a winget manifest would make trying it one command.
 3. **Reconsider the desktop surface.** opencode adding a desktop app after the TUI
    suggests the TUI alone is not enough for everyone. Dagger's answer is already a web UI
    — arguably a better one for a service — but it is worth noting the direction of travel.

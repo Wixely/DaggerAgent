@@ -19,9 +19,9 @@ A pure-C# .NET 10 LLM agent that talks to OpenAI-compatible, Anthropic and Ollam
 - **Diff-preview mode** (`Tools:WritePreview=true`): `write_file`/`edit_file` stage proposed changes and return a unified diff instead of writing; agent (or caller) must call `confirm_write` to apply. Adds `list_pending_writes` and `discard_write` tools.
 - **API-key auth on inbound HTTP**: populate `Auth:ApiKeys` (or `DAGGER_Auth__ApiKeys__0`) to require an `X-Api-Key` header (or `Authorization: Bearer <key>`) on every request. Empty list = auth disabled (dev default). `/agent/healthz`, `/api/version`, `/v1/models` bypass the check.
 - **Token + cost tracking**: real BPE counting (o200k Tiktoken) drives compression triggers. Every turn logs input/output/total tokens and per-model USD cost; cumulative totals surface on `JobView.totalInputTokens` / `totalOutputTokens` / `totalCostUsd`.
-- **Cross-session memory (opt-in)**: `Memory:Enabled=true` activates a `recall_past_work` tool and an automatic save of every compression summary as an embedded memory. Embedding provider follows `OpenAI:Provider`; vector store lives in the same SQLite database.
+- **Cross-session memory (opt-in)**: `Memory:Enabled=true` activates a `recall_past_work` tool and an automatic save of every compression summary as an embedded memory. Embeddings (`Memory:EmbeddingModel`) are fetched through the legacy `OpenAI` section's `Provider` / `BaseUrl` / `ApiKey` — not through `Endpoints` — so keep that section pointing at a server that can embed. The vector store lives in the same SQLite database.
 - **Structured questions (`ask_user`)**: the agent can ask whoever is driving the job a question with clickable options — rendered inline in the web transcript (buttons + free text), and as numbered options answered from the input line in the interactive TUI. With nobody attached (CLI one-shot, trigger jobs, Banter rooms — which have their own `ask_operator`) the tool answers immediately that no one is there to ask. Wait bounded by `Tools:AskUserTimeoutSeconds` (default 300).
-- **Interactive hotkeys**: F2 lists slash commands; F3 opens a recent-sessions picker so you can resume by number instead of typing a job id.
+- **Interactive hotkeys**: F1 shows the provider, model, tool counts, MCP server status and the job's token and cost totals; F2 lists slash commands; F3 opens a recent-sessions picker so you can resume by number instead of typing a job id; F8 resumes the most recent job started in the current directory (only before you send the first message).
 - **Source-control triggers**: in service mode DaggerAgent can poll GitHub / GitLab / Azure DevOps via MCP servers and spawn an agent job per fresh ticket. Discovery uses the MCP server's `list_issues` / `list_mentions_since` / `query_work_items` tools **directly** — no LLM in the discovery path, so it's deterministic and free. Matches are deduplicated in the local SQLite via a `trigger_seen` table; each fresh match seeds a regular agent job that then has the same MCP server's action tools available for the actual work. Configure via the **Trig** tab in the web UI (recommended — see [Source-control triggers](#source-control-triggers)) or by editing `Triggers` in `appsettings.json`.
 - **Resumable jobs**: every turn is persisted to a local SQLite database; resume by job id.
 - **Context compression**: when token usage exceeds a threshold, older history is summarised via the LLM itself and replaced by a single summary message.
@@ -30,17 +30,23 @@ A pure-C# .NET 10 LLM agent that talks to OpenAI-compatible, Anthropic and Ollam
 
 ## Quick start
 
+Grab a zip from the [Releases page](https://github.com/Wixely/DaggerAgent/releases), or run the
+published image `ghcr.io/wixely/daggeragent` — see [docs/install.md](docs/install.md) for both,
+for running as a Windows Service, and for building from source.
+
 ```bash
 # Interactive TUI
-dotnet run
+dagger
 
 # CLI one-shot
-dotnet run -- run --prompt "Summarise the README in two sentences"
+dagger run --prompt "Summarise the README in two sentences"
 
 # HTTP service
-dotnet run -- serve
+dagger serve
 curl http://localhost:5090/agent/healthz
 ```
+
+From a source checkout, use `dotnet run --` in place of `dagger`.
 
 Open `http://localhost:5090/agent/ui` for the web interface. It is one responsive page:
 on a phone the side panes become bottom sheets, the configuration tabs fold behind
@@ -52,25 +58,41 @@ bookmarks keep working.
 
 Configuration is layered: `appsettings.json` → `appsettings.{Env}.json` → `appsettings.Local.json` → environment variables (no prefix) → environment variables with `DAGGER_` prefix → command-line arguments.
 
-Secrets (`OpenAI:ApiKey`, MCP `AuthHeader`) belong in `appsettings.Local.json` (gitignored) or `DAGGER_OpenAI__ApiKey` environment variables.
+Secrets (`OpenAI:ApiKey`, endpoint `ApiKey`s, MCP `AuthHeader`) belong in `appsettings.Local.json` (gitignored) or environment variables such as `DAGGER_OpenAI__ApiKey`. Anything you enter in the web UI — endpoint keys included — is saved in plain text to `data/runtime-config.json` beside the executable, and that file wins over `appsettings*.json` once it exists. Restrict access to it.
 
-The default committed config points at LM Studio on `http://localhost:1234/v1` with model `qwen/qwen3.6-27b` — change as needed.
+The default committed config points at LM Studio on `http://localhost:1234/v1` with model `qwen3.5:122b` — change as needed.
 
-### Talking to Ollama upstream
+### Endpoints
 
-To talk to an Ollama server instead of an OpenAI-compatible one, set:
+Upstream models are configured as a list of endpoints — most easily in the web UI's **Endp**
+tab, or under `Endpoints` in config. Each has an `Id`, a `Provider` (`OpenAI`, `Anthropic`,
+`Ollama`, `ClaudeCli`, `CodexCli`, `CopilotCli`), a `BaseUrl`, an `ApiKey` and a
+`DefaultModel`; `DefaultId` picks the one jobs use unless they pin another. For example, a local
+Ollama server alongside Anthropic:
 
 ```jsonc
 {
-  "OpenAI": {
-    "Provider": "Ollama",
-    "BaseUrl": "http://localhost:11434",
-    "DefaultModel": "llama3.1:8b"
+  "Endpoints": {
+    "DefaultId": "ollama",
+    "Items": [
+      { "Id": "ollama", "DisplayName": "Local Ollama", "Provider": "Ollama",
+        "BaseUrl": "http://localhost:11434", "DefaultModel": "llama3.1:8b" },
+      { "Id": "claude", "DisplayName": "Claude", "Provider": "Anthropic",
+        "ApiKey": "sk-ant-...", "DefaultModel": "claude-opus-4-7" }
+    ]
   }
 }
 ```
 
-(Note the URL does **not** end in `/v1` for Ollama — that's only for its OpenAI-compat shim. Use `http://localhost:11434` for the native protocol.)
+(Note the Ollama URL does **not** end in `/v1` — that's only for its OpenAI-compat shim. Use `http://localhost:11434` for the native protocol.)
+
+Optional per-endpoint fields: `MaxContextTokens` (size compression to this model's window
+instead of the global `Agent:CompressionThreshold`), `MaxOutputTokens`, `RequestTimeoutSeconds`,
+and `Enabled` (hide it from the UI without deleting it).
+
+With no `Endpoints` section at all, DaggerAgent falls back to the single endpoint described by
+the `OpenAI` section (`Provider`, `BaseUrl`, `ApiKey`, `DefaultModel`) — which is what the
+committed `appsettings.json` uses.
 
 ## MCP servers
 
@@ -279,25 +301,11 @@ A background poller (`Triggers:Enabled=true`) scans configured ticket sources ev
 
 `TriggerService` re-reads its `IOptions<TriggerOptions>` snapshot on every cycle, so edits via the UI (or hand-edits to `data/runtime-config.json`) take effect on the next iteration. Toggling `Enabled` off doesn't kill the loop — the service idles and resumes when you turn it back on. The dedup cursor (last-polled timestamp) is per-source and persists in the SQLite job DB, so flipping a source off and on later won't re-process old tickets.
 
-## Running as a Windows Service
+## Running as a Windows Service or in Docker
 
-```cmd
-dotnet publish -c Release -o publish
-sc.exe create DaggerAgent binPath= "%CD%\publish\dagger.exe serve" start= auto
-sc.exe start DaggerAgent
-```
-
-The app detects `WindowsServiceHelpers.IsWindowsService()` automatically; the explicit `serve` arg makes Service mode reliable inside containers too.
-
-## Running in Docker
-
-```bash
-docker build -t daggeragent .
-docker run --rm -p 5090:5090 \
-  -e DAGGER_OpenAI__BaseUrl=http://host.docker.internal:1234/v1 \
-  -v daggeragent-data:/data -v daggeragent-logs:/app/logs \
-  daggeragent
-```
+See [docs/install.md](docs/install.md#as-a-windows-service) for the `sc.exe` setup and
+[docs/install.md](docs/install.md#docker) for the published image, its volumes, and building it
+yourself.
 
 ## License
 
