@@ -100,7 +100,8 @@ public sealed class CliRunner
         }
         else
         {
-            var chosenModel = model ?? openAi.DefaultModel;
+            var endpoints = _services.GetRequiredService<IOptions<EndpointsOptions>>().Value;
+            var chosenModel = Server.JobsStreamEndpoints.ResolveModel(model, null, endpoints, openAi);
             state = agent.CreateState(chosenModel, system);
         }
 

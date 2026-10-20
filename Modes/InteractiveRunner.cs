@@ -122,6 +122,7 @@ public sealed class InteractiveRunner
         var agent = _services.GetRequiredService<LlmAgent>();
         var store = _services.GetRequiredService<IJobStore>();
         var openAi = _services.GetRequiredService<IOptions<OpenAIOptions>>().Value;
+        var endpoints = _services.GetRequiredService<IOptions<EndpointsOptions>>().Value;
         var agentOpts = _services.GetRequiredService<IOptions<AgentOptions>>().Value;
         var mcpHost = _services.GetRequiredService<McpClientHost>();
         var builtIns = _services.GetRequiredService<BuiltInToolRegistry>();
@@ -133,10 +134,12 @@ public sealed class InteractiveRunner
 
         ConsoleIcon.TrySet(_log);
 
-        var state = agent.CreateState(openAi.DefaultModel);
+        // Same model resolution as the web UI and ACP: the default endpoint's model, falling
+        // back to the legacy OpenAI section only when no Endpoints are configured.
+        var state = agent.CreateState(Server.JobsStreamEndpoints.ResolveModel(null, null, endpoints, openAi));
         var jobLogScope = _log.BeginScope(new Dictionary<string, object?> { ["JobId"] = state.Id });
         _log.LogInformation("Interactive runner started (jobId={JobId}, model={Model}, endpoint={Endpoint})",
-            state.Id, state.Model, openAi.BaseUrl);
+            state.Id, state.Model, _services.GetRequiredService<Llm.ChatClientFactory>().ResolveEndpoint(null).Id);
         using var ctRegistration = cancellationToken.Register(() =>
             _log.LogWarning("Interactive runner: host cancellationToken signalled while loop active"));
 
@@ -473,16 +476,20 @@ public sealed class InteractiveRunner
     /// Push the model / endpoint / tools / job / turn block into the chat region —
     /// triggered by F1. Cheap to recompute from current state on every press.
     /// </summary>
-    private async Task ShowInfoInChatAsync(ConversationState state, OpenAIOptions openAi, McpClientHost mcpHost, BuiltInToolRegistry builtIns, CancellationToken ct)
+    private async Task ShowInfoInChatAsync(ConversationState state, McpClientHost mcpHost, BuiltInToolRegistry builtIns, CancellationToken ct)
     {
         var builtInCount = builtIns.ForAgent(state.Id, state.Depth).Count;
         var mcpCount = mcpHost.AllTools.Count;
         var mcpServers = mcpHost.ConnectionStatuses;
         var livePings = await PingConnectedMcpServersAsync(mcpHost, mcpServers, ct).ConfigureAwait(false);
+        // The endpoint this job's turns actually go to — its pinned one, else the default —
+        // not the legacy OpenAI section, which is only the fallback when Endpoints is empty.
+        var endpoint = _services.GetRequiredService<Llm.ChatClientFactory>().ResolveEndpoint(state.EndpointId);
+        var url = string.IsNullOrWhiteSpace(endpoint.BaseUrl) ? "provider default" : endpoint.BaseUrl;
         _chat.AddLine("[grey]── info ──[/]");
-        _chat.AddLine($"  [grey]provider[/]  {Markup.Escape(openAi.Provider)}");
+        _chat.AddLine($"  [grey]provider[/]  {Markup.Escape(endpoint.Provider)}");
         _chat.AddLine($"  [grey]model[/]     [bold]{Markup.Escape(state.Model)}[/]");
-        _chat.AddLine($"  [grey]endpoint[/]  [dim]{Markup.Escape(openAi.BaseUrl)}[/]");
+        _chat.AddLine($"  [grey]endpoint[/]  {Markup.Escape(endpoint.Id)} [dim]{Markup.Escape(url)}[/]");
         _chat.AddLine($"  [grey]tools[/]     {builtInCount} built-in + {mcpCount} mcp = {builtInCount + mcpCount} total");
         if (mcpServers.Count == 0)
         {
@@ -1153,7 +1160,7 @@ public sealed class InteractiveRunner
 
         if (key.Key == ConsoleKey.F1)
         {
-            await ShowInfoInChatAsync(state, openAi, mcpHost, builtIns, ct).ConfigureAwait(false);
+            await ShowInfoInChatAsync(state, mcpHost, builtIns, ct).ConfigureAwait(false);
             Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
             return;
         }
@@ -1444,7 +1451,9 @@ public sealed class InteractiveRunner
                 state.TotalInputTokens = 0;
                 state.TotalOutputTokens = 0;
                 state.TotalCostUsd = 0;
-                state.Model = openAi.DefaultModel;
+                state.Model = Server.JobsStreamEndpoints.ResolveModel(
+                    null, state.EndpointId,
+                    _services.GetRequiredService<IOptions<EndpointsOptions>>().Value, openAi);
                 state.CreatedAt = state.UpdatedAt = DateTimeOffset.UtcNow;
                 state.WorkingDirectory = _services.GetRequiredService<Configuration.HostLaunchInfo>().OriginalWorkingDirectory;
                 _firstTurnStarted = false; // fresh session: re-offer F8
@@ -1462,7 +1471,7 @@ public sealed class InteractiveRunner
                 _chat.AddLine("[dim][[reinitialising MCP servers...]][/]");
                 Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
                 await mcpHost.ReloadAsync(ct).ConfigureAwait(false);
-                await ShowInfoInChatAsync(state, openAi, mcpHost, builtIns, ct).ConfigureAwait(false);
+                await ShowInfoInChatAsync(state, mcpHost, builtIns, ct).ConfigureAwait(false);
                 Render(ctx, layout, state, openAi, mcpHost, builtIns, input);
                 return true;
             case "/resume":

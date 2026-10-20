@@ -88,8 +88,9 @@ public sealed class ChatClientFactory
     /// <summary>
     /// Pick the active <see cref="EndpointConfig"/>. Falls back to a synthetic config built
     /// from <see cref="OpenAIOptions"/> so a fresh install with no Endpoints section still works.
+    /// Public so UIs can show the endpoint a turn will actually go to, not the legacy section.
     /// </summary>
-    private EndpointConfig ResolveEndpoint(string? requestedId)
+    public EndpointConfig ResolveEndpoint(string? requestedId)
     {
         // 1. Per-call override
         if (!string.IsNullOrWhiteSpace(requestedId))

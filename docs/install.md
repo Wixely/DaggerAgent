@@ -57,9 +57,10 @@ docker run --rm -p 5090:5090 \
 ```
 
 Tags follow the release: `latest`, `1.12.0`, `1.12`, and so on. The image starts in `serve`
-mode. The job database lives in `/data`; what you change in the web UI (endpoints, MCP
-servers, triggers, Banter) is saved to `/app/data/runtime-config.json`, which the image does
-not declare as a volume — mount `/app/data` as above or those edits go with the container.
+mode, with three volumes: `/data` for the job database, `/app/data` for
+`runtime-config.json` (what you change in the web UI: endpoints, MCP servers, triggers,
+Banter), and `/app/logs`. Name them as above — with `--rm`, unnamed volumes are deleted along
+with the container, and your web UI settings with them.
 
 ### Building the image yourself
 

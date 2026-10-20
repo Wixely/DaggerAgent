@@ -20,6 +20,8 @@ ENV ASPNETCORE_URLS=http://0.0.0.0:5090 \
     DAGGER_Server__Host=0.0.0.0 \
     DAGGER_Server__Port=5090 \
     DAGGER_Jobs__ConnectionString="Data Source=/data/jobs.db"
-VOLUME ["/data", "/app/logs"]
+# /data holds the job database; /app/data holds runtime-config.json, where the web UI saves
+# endpoints, MCP servers, triggers and Banter settings (it lives under the content root).
+VOLUME ["/data", "/app/data", "/app/logs"]
 EXPOSE 5090
 ENTRYPOINT ["dotnet", "dagger.dll", "serve"]
