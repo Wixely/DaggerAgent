@@ -16,7 +16,7 @@ Every page ends with *What Dagger could take from it* — that is the point of t
 
 | Project | Language | Licence | Shape | MCP | Stars | Strongest at |
 | --- | --- | --- | --- | --- | ---: | --- |
-| [**DaggerAgent**](../README.md) | **C# / .NET 10** | MIT | REPL · CLI · HTTP service + web UI · ACP · chat-room agent | client | 0 | Being a long-lived *service* on Windows/.NET estates |
+| [**DaggerAgent**](../README.md) | **C# / .NET 10** | MIT | TUI · CLI · HTTP service + web UI · ACP · chat-room agent | client | 0 | Being a long-lived *service* on Windows/.NET estates |
 | [pi](pi.md) | TypeScript | MIT | TUI + npm toolkit | not built in | 116k | Being a harness you reshape in code |
 | [opencode](opencode.md) | TypeScript | MIT | TUI + desktop + web console | client | 218k | Provider breadth and polish |
 | [cline](cline.md) | TypeScript | Apache-2.0 | IDE extension + CLI + SDK | client | 71k | Living where the developer already is |

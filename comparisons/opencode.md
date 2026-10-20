@@ -54,7 +54,7 @@ agent editing things while it is still figuring out what to do.
 
 1. **Make plan-mode a runtime toggle.** Dagger already has the pieces — `ForcePlan`,
    `ReadOnly`, the tool gates. What is missing is one visible control in the web UI and
-   the REPL that flips a job between "look, don't touch" and "go", mid-job, the way
+   the TUI that flips a job between "look, don't touch" and "go", mid-job, the way
    opencode's Plan/Build does. This is the single highest-value idea in this folder.
 2. **Ship a real installer.** A `dotnet tool install -g` package, a winget manifest, or a
    published Docker image would remove the biggest practical barrier to anyone trying it.

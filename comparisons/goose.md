@@ -22,7 +22,7 @@ Of the six, this is the closest architectural cousin. Both are general-purpose r
 coding-only. Both are compiled, single-binary, no-scripting-runtime agents — Rust and .NET
 respectively — in a field otherwise made of TypeScript. Both run locally against whatever
 model you point them at. Both treat MCP as the way capability arrives. Both offer more than
-one surface (goose: desktop + CLI + API; Dagger: REPL + CLI + web + ACP + rooms).
+one surface (goose: desktop + CLI + API; Dagger: TUI + CLI + web + ACP + rooms).
 
 If you want to know what Dagger might look like with five years and a payments company
 behind it, it looks a fair bit like goose.
