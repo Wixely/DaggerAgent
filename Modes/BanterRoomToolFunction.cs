@@ -18,24 +18,33 @@ namespace Daggeragent.Modes;
 public sealed class BanterRoomToolFunction : AIFunction
 {
     private readonly ToolDescriptorPayload _descriptor;
+    private readonly string _name;
+    private readonly string _description;
     private readonly string _room;
     private readonly Func<string, string, string, CancellationToken, Task<ToolResultPayload>> _invoke;
     private readonly JsonElement _schema;
 
     /// <param name="invoke">(name, JSON arguments, room, ct) → the SDK's tool result.</param>
+    /// <param name="name">What the model calls it, when that must differ from the room's name for
+    /// it (a clash with one of DaggerAgent's own tools). Calls still go out under the room's name.</param>
+    /// <param name="description">The description to offer, when it has to name a renamed tool.</param>
     public BanterRoomToolFunction(
         ToolDescriptorPayload descriptor,
         string room,
-        Func<string, string, string, CancellationToken, Task<ToolResultPayload>> invoke)
+        Func<string, string, string, CancellationToken, Task<ToolResultPayload>> invoke,
+        string? name = null,
+        string? description = null)
     {
         _descriptor = descriptor;
+        _name = name ?? descriptor.Name;
+        _description = description ?? descriptor.Description;
         _room = room;
         _invoke = invoke;
         _schema = ParseSchema(descriptor.Schema);
     }
 
-    public override string Name => _descriptor.Name;
-    public override string Description => _descriptor.Description;
+    public override string Name => _name;
+    public override string Description => _description;
     public override JsonElement JsonSchema => _schema;
 
     protected override async ValueTask<object?> InvokeCoreAsync(
@@ -43,7 +52,7 @@ public sealed class BanterRoomToolFunction : AIFunction
     {
         // The SDK side wants the raw JSON arguments string; MEAI hands us the parsed dictionary.
         var argsJson = JsonSerializer.Serialize<IDictionary<string, object?>>(arguments);
-        var result = await _invoke(Name, argsJson, _room, cancellationToken).ConfigureAwait(false);
+        var result = await _invoke(_descriptor.Name, argsJson, _room, cancellationToken).ConfigureAwait(false);
         return result.IsError ? $"error: {result.Content}" : result.Content;
     }
 

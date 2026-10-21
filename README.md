@@ -148,6 +148,13 @@ answers by clicking, bounded by `Banter:AskTimeoutSeconds`), the delegator's `op
 them — worth it for an unattended fleet, where an unanswerable ask would just block turns on the
 timeout.
 
+Files people attach reach the model with the message, under the SDK's rules: a `local` agent is
+handed an image as an image and a small text file as its text, a `frontier` one is only told what
+was attached, and anything else arrives as a note saying what it is and that it cannot be opened.
+Two room tools let the model ask for files itself: `room_files` lists a room's attachments, and
+`read_room_file` reads one by id. (The SDK calls that tool `read_file`; it is renamed here so it
+does not collide with DaggerAgent's own `read_file`, which reads the local disk.)
+
 ### Enrolling (recommended)
 
 An operator creates the agent in the Banter desktop client's **agents page** and is handed a

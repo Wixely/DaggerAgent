@@ -30,6 +30,17 @@ public sealed class DaggerBanterAgent : BanterAgent
     /// changes or is cleared replaces the old one instead of stacking on it.</summary>
     private readonly Dictionary<string, string> _basePrompts = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Room tools whose names clash with DaggerAgent's own. The SDK's <c>read_file</c> reads a file
+    /// attached in the room by its Banter id; Dagger's reads the local disk, and on a clash the
+    /// registry's wins — so the model would hand a file id to a path reader. Offered under these
+    /// names instead, with every room tool's description pointed at the new name.
+    /// </summary>
+    private static readonly Dictionary<string, string> RoomToolRenames = new(StringComparer.Ordinal)
+    {
+        ["read_file"] = "read_room_file",
+    };
+
     /// <param name="model">Model for room turns; empty lets the endpoint's default decide.</param>
     /// <param name="endpointId">LLM endpoint id; null/empty uses the active default endpoint.</param>
     public DaggerBanterAgent(
@@ -76,8 +87,14 @@ public sealed class DaggerBanterAgent : BanterAgent
         Client.Evicted += reason => Evicted?.Invoke(reason);
     }
 
+    // The SDK calls the four-argument form, which carries a message's attached file; the
+    // three-argument one is still abstract, so both lead to the same turn.
+    protected override IAsyncEnumerable<string> RespondAsync(
+        string room, string sender, string prompt, CancellationToken cancellationToken) =>
+        RespondAsync(room, sender, prompt, fileId: null, cancellationToken);
+
     protected override async IAsyncEnumerable<string> RespondAsync(
-        string room, string sender, string prompt,
+        string room, string sender, string prompt, string? fileId,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!_states.TryGetValue(room, out var state))
@@ -94,17 +111,34 @@ public sealed class DaggerBanterAgent : BanterAgent
         // situational — delegator status changes with elections, grants change under admins —
         // and dispatched back through the SDK so local-vs-server routing stays its problem.
         var roomTools = ToolsFor(room)
-            .Select(AITool (d) => new BanterRoomToolFunction(d, room, (name, args, r, ct) => InvokeToolAsync(name, args, r, ct)))
+            .Select(AITool (d) => new BanterRoomToolFunction(
+                d, room, (name, args, r, ct) => InvokeToolAsync(name, args, r, ct),
+                RoomToolRenames.GetValueOrDefault(d.Name), RenameToolsIn(d.Description)))
             .ToList();
 
-        _log.LogInformation("Banter turn: room={Room} sender={Sender} jobId={JobId} roomTools=[{RoomTools}]",
-            room, sender, state.Id, string.Join(", ", ToolsFor(room).Select(t => t.Name)));
+        // A file somebody attached, fetched under the SDK's rules: a local agent is handed an
+        // image as an image and a small text file as its text; a third-party one is only told of
+        // it. The note always goes in — what is attached, and whether it is included or why not —
+        // so the model can name the file back and never claims nothing came through.
+        var attachment = await FetchAttachmentAsync(fileId, cancellationToken).ConfigureAwait(false);
+        List<AIContent>? images = null;
+        if (attachment?.ImageDataUri is { } dataUri)
+        {
+            images = [new DataContent(dataUri)];
+        }
+
+        _log.LogInformation("Banter turn: room={Room} sender={Sender} jobId={JobId} roomTools=[{RoomTools}] attachment={Attachment}",
+            room, sender, state.Id, string.Join(", ", roomTools.Select(t => t.Name)),
+            attachment is null ? "none" : $"{attachment.Name} ({attachment.MimeType}, shared={attachment.Shared})");
 
         // Tag the sender: a room has more than one human, and an untagged transcript makes the
         // model lose track of who it is answering.
+        // The note goes in as the SDK wrote it: for a text file it carries the file's contents,
+        // which must reach the model byte for byte, so no tool renaming here.
+        var message = attachment is null ? $"{sender}: {prompt}" : $"{sender}: {prompt}\n\n{attachment.Note}";
         var splitter = new ThinkingSplitter();
         await foreach (var update in _agent
-            .RunStreamingTurnAsync(state, $"{sender}: {prompt}", attachments: null, roomTools, cancellationToken)
+            .RunStreamingTurnAsync(state, message, images, roomTools, cancellationToken)
             .WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             foreach (var content in update.Contents)
@@ -134,6 +168,16 @@ public sealed class DaggerBanterAgent : BanterAgent
 
         _log.LogInformation("Banter turn complete: room={Room} jobId={JobId} turns={Turns} tokens={Tokens}",
             room, state.Id, state.TurnsTaken, state.ApproxTokenCount);
+    }
+
+    /// <summary>Point text from the SDK at a renamed room tool's new name.</summary>
+    private static string RenameToolsIn(string text)
+    {
+        foreach (var (from, to) in RoomToolRenames)
+        {
+            text = System.Text.RegularExpressions.Regex.Replace(text, $@"\b{from}\b", to);
+        }
+        return text;
     }
 
     /// <summary>
