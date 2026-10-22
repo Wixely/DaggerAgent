@@ -76,13 +76,31 @@ public sealed class ChatClientFactory
             _ => CreateOpenAiCompatibleClient(endpoint, model),
         };
 
-        return new ChatClientBuilder(baseClient)
+        var builder = new ChatClientBuilder(baseClient)
             .UseFunctionInvocation(_loggerFactory, fic =>
             {
                 fic.MaximumIterationsPerRequest = Math.Max(1, maxIterations);
-            })
-            .UseLogging(_loggerFactory)
-            .Build();
+            });
+
+        // Beneath the function loop, so a call the model wrote as text runs like a real one. Not
+        // for CLI endpoints: those run their own tools and never hand calls back to this loop.
+        if (!IsCliProvider(endpoint.Provider))
+        {
+            builder.Use(inner => new TextualToolCallChatClient(
+                inner, _loggerFactory.CreateLogger<TextualToolCallChatClient>()));
+        }
+
+        builder.UseLogging(_loggerFactory);
+
+        // Innermost: the raw exchange, before salvage rewrites anything.
+        if (_agentOptions.TraceModelIo)
+        {
+            var directory = Path.Combine(_launchInfo.ContentRoot, _agentOptions.TraceDirectory);
+            builder.Use(inner => new ModelTraceChatClient(
+                inner, directory, jobId, endpoint.Id, _loggerFactory.CreateLogger<ModelTraceChatClient>()));
+        }
+
+        return builder.Build();
     }
 
     /// <summary>
@@ -132,12 +150,11 @@ public sealed class ChatClientFactory
     /// own conversation context via <c>--resume</c>, so callers like the context compressor use
     /// this to avoid driving a whole CLI just to run a plain-text task against them.
     /// </summary>
-    public bool IsCliEndpoint(string? endpointId)
-    {
-        var provider = ResolveEndpoint(endpointId).Provider?.Trim().ToLowerInvariant();
-        return provider is "claudecli" or "claude-cli" or "codexcli" or "codex-cli"
-                        or "copilotcli" or "copilot-cli";
-    }
+    public bool IsCliEndpoint(string? endpointId) => IsCliProvider(ResolveEndpoint(endpointId).Provider);
+
+    private static bool IsCliProvider(string? provider) =>
+        provider?.Trim().ToLowerInvariant() is "claudecli" or "claude-cli" or "codexcli" or "codex-cli"
+                                             or "copilotcli" or "copilot-cli";
 
     private IChatClient CreateAnthropicNativeClient(EndpointConfig endpoint)
     {

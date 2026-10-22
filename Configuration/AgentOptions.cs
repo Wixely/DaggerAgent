@@ -94,4 +94,14 @@ public sealed class AgentOptions
 
     /// <summary>Maximum auto-continue retries per user submission.</summary>
     public int MaxAutoContinues { get; set; } = 2;
+
+    /// <summary>
+    /// Record every model request and response — the full messages sent, the tools offered, the
+    /// raw reply — one JSON line each in <see cref="TraceDirectory"/>/{jobId}.jsonl. Off by default:
+    /// prompts carry whatever the conversation does, file contents included.
+    /// </summary>
+    public bool TraceModelIo { get; set; }
+
+    /// <summary>Where <see cref="TraceModelIo"/> writes, relative to the executable's folder.</summary>
+    public string TraceDirectory { get; set; } = "logs/model-trace";
 }
