@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Daggeragent.Configuration;
 using Daggeragent.Tools;
 using Microsoft.Extensions.AI;
@@ -15,6 +16,11 @@ namespace Daggeragent.Llm;
 /// CLI returns is cached in <see cref="CliSessionStore"/> keyed by job id, so follow-up turns
 /// in the same conversation pass <c>--resume</c> and the spawned agent keeps continuity
 /// rather than cold-starting every turn.
+///
+/// Each CLI runs in a line-per-event output mode (Claude <c>stream-json</c>, Codex
+/// <c>--json</c>, Copilot <c>--output-format json</c>), so <see cref="GetStreamingResponseAsync"/>
+/// yields the reply as it is written: token deltas for Claude and Copilot, whole messages for
+/// Codex, whose JSON events carry no deltas.
 ///
 /// DaggerAgent's own tools (built-in, MCP) are NOT forwarded — the CLI uses its native tool
 /// surface. MCP servers configured with PassthroughToCli=true are written out to the CLI's
@@ -112,8 +118,8 @@ public sealed class CliChatClient : IChatClient
                 ModelId = options?.ModelId ?? _model,
             };
 
-        var text = await RunAsync(prompt, cancellationToken).ConfigureAwait(false);
-        return new ChatResponse(new ChatMessage(ChatRole.Assistant, text))
+        var run = await RunAsync(prompt, new DeltaSink(null), cancellationToken).ConfigureAwait(false);
+        return new ChatResponse(new ChatMessage(ChatRole.Assistant, run.Text))
         {
             ModelId = options?.ModelId ?? _model,
             FinishReason = ChatFinishReason.Stop,
@@ -206,23 +212,112 @@ public sealed class CliChatClient : IChatClient
         ChatOptions? options = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        // The CLI doesn't expose a usable token-by-token streaming format we can splice into
-        // MEAI's update stream (Claude's stream-json is event-shaped, not delta-shaped). Run
-        // the non-streaming path and yield the full reply as a single update — the UI's
-        // collector aggregates updates anyway, so behaviour is the same except for liveness.
-        var response = await GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
-        foreach (var msg in response.Messages)
+        var msgList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        var prompt = BuildPrompt(msgList);
+        var modelId = options?.ModelId ?? _model;
+        if (string.IsNullOrWhiteSpace(prompt))
         {
-            yield return new ChatResponseUpdate(msg.Role, msg.Contents)
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "(no user prompt to forward to CLI)")
             {
-                ModelId = response.ModelId,
-                FinishReason = response.FinishReason,
+                ModelId = modelId,
+                FinishReason = ChatFinishReason.Stop,
             };
+            yield break;
+        }
+
+        // The CLI runs on a background task; each text fragment it prints is handed over a
+        // channel and yielded as its own update, so callers see the reply as it is written.
+        var channel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+        var sink = new DeltaSink(channel.Writer);
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var runTask = RunAndCompleteAsync();
+
+        async Task<CliRunResult> RunAndCompleteAsync()
+        {
+            try { return await RunAsync(prompt, sink, runCts.Token).ConfigureAwait(false); }
+            finally { channel.Writer.TryComplete(); }
+        }
+
+        var finished = false;
+        try
+        {
+            await foreach (var delta in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                yield return new ChatResponseUpdate(ChatRole.Assistant, delta) { ModelId = modelId };
+
+            var run = await runTask.ConfigureAwait(false);
+            // Nothing streamed (an error before any output, or a CLI that printed no deltas):
+            // the final text is the whole reply. A failure after text streamed still has to
+            // reach the caller, so it follows what was already sent.
+            if (!sink.EmittedAny)
+                yield return new ChatResponseUpdate(ChatRole.Assistant, run.Text) { ModelId = modelId };
+            else if (!run.Succeeded)
+                yield return new ChatResponseUpdate(ChatRole.Assistant, "\n\n" + run.Text) { ModelId = modelId };
+
+            yield return new ChatResponseUpdate { Role = ChatRole.Assistant, ModelId = modelId, FinishReason = ChatFinishReason.Stop };
+            finished = true;
+        }
+        finally
+        {
+            // The caller stopped reading early — kill the CLI rather than leave it running.
+            if (!finished)
+            {
+                runCts.Cancel();
+                try { await runTask.ConfigureAwait(false); }
+                catch { /* cancelled or failed; the caller has already moved on */ }
+            }
         }
     }
 
-    private async Task<string> RunAsync(string prompt, CancellationToken ct)
+    /// <summary>Outcome of one CLI turn. <see cref="Text"/> is the reply, or an error message when <see cref="Succeeded"/> is false.</summary>
+    private sealed record CliRunResult(string Text, bool Succeeded, bool PartialMessagesUnsupported = false);
+
+    /// <summary>
+    /// Collects the reply text a CLI streams and forwards each fragment to an optional channel.
+    /// <see cref="Break"/> marks the end of one text block (an assistant message, or the text
+    /// before a tool call), so the next block starts on a new paragraph instead of running on.
+    /// Only the stdout reader writes to it; the totals are read once the run has finished.
+    /// </summary>
+    private sealed class DeltaSink(ChannelWriter<string>? writer)
     {
+        private readonly StringBuilder _text = new();
+        private bool _break;
+
+        public bool EmittedAny => _text.Length > 0;
+        public string Text => _text.ToString();
+
+        public void Break() => _break = true;
+
+        public void Append(string? delta)
+        {
+            if (string.IsNullOrEmpty(delta)) return;
+            if (_break && _text.Length > 0) delta = "\n\n" + delta;
+            _break = false;
+            _text.Append(delta);
+            writer?.TryWrite(delta);
+        }
+    }
+
+    /// <summary>
+    /// Claude binaries that rejected <c>--include-partial-messages</c> (older CLI builds). They
+    /// still get <c>stream-json</c>, which streams whole assistant messages rather than deltas.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> s_noPartialMessages = new(StringComparer.OrdinalIgnoreCase);
+
+    private async Task<CliRunResult> RunAsync(string prompt, DeltaSink sink, CancellationToken ct)
+    {
+        var result = await RunOnceAsync(prompt, sink, ct).ConfigureAwait(false);
+        if (!result.PartialMessagesUnsupported) return result;
+
+        _log.LogWarning(
+            "CLI {Binary} does not support --include-partial-messages; streaming whole messages instead. Update the Claude CLI for token-level streaming.",
+            _binary);
+        s_noPartialMessages[_binary] = true;
+        return await RunOnceAsync(prompt, sink, ct).ConfigureAwait(false);
+    }
+
+    private async Task<CliRunResult> RunOnceAsync(string prompt, DeltaSink sink, CancellationToken ct)
+    {
+        var partialMessages = _kind == CliKind.Claude && !s_noPartialMessages.ContainsKey(_binary);
         var passthrough = _mcp.Servers.Where(s => s.Enabled && s.PassthroughToCli).ToList();
         string? resumeSession = null;
         if (_jobId is not null)
@@ -270,8 +365,13 @@ public sealed class CliChatClient : IChatClient
                 await File.WriteAllTextAsync(configPath, CliMcpConfigBuilder.BuildClaudeConfig(passthrough), ct).ConfigureAwait(false);
                 psi.ArgumentList.Add("-p");
                 psi.ArgumentList.Add(prompt);
+                // stream-json writes one event per line as the run goes (text deltas with
+                // --include-partial-messages) and ends with the same result envelope that
+                // --output-format json prints. --verbose is required to combine it with -p.
                 psi.ArgumentList.Add("--output-format");
-                psi.ArgumentList.Add("json");
+                psi.ArgumentList.Add("stream-json");
+                psi.ArgumentList.Add("--verbose");
+                if (partialMessages) psi.ArgumentList.Add("--include-partial-messages");
                 psi.ArgumentList.Add("--mcp-config");
                 psi.ArgumentList.Add(configPath);
                 if (!string.IsNullOrWhiteSpace(_model))
@@ -308,6 +408,9 @@ public sealed class CliChatClient : IChatClient
                 await File.WriteAllTextAsync(configPath, CliMcpConfigBuilder.BuildCodexConfig(passthrough), ct).ConfigureAwait(false);
                 psi.Environment["CODEX_HOME"] = tempDir;
                 psi.ArgumentList.Add("exec");
+                // --json prints one event per line (thread.started, item.completed, …) so each
+                // agent message streams as it completes and the thread id arrives as data.
+                psi.ArgumentList.Add("--json");
                 // Codex's sandbox / approval flags belong before the `resume` subcommand vs the
                 // prompt itself — Codex parses global flags first, then the subcommand.
                 if (!string.IsNullOrWhiteSpace(_permission.CodexSandbox))
@@ -409,7 +512,7 @@ public sealed class CliChatClient : IChatClient
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException)
             {
                 _log.LogError(ex, "Failed to start CLI binary {Binary}", _binary);
-                return $"Error: failed to start '{_binary}' — is it installed and on PATH? ({ex.Message})";
+                return Failed($"Error: failed to start '{_binary}' — is it installed and on PATH? ({ex.Message})");
             }
 
             try { proc.StandardInput.Close(); }
@@ -427,7 +530,9 @@ public sealed class CliChatClient : IChatClient
             // closes the pipes naturally and these tasks complete with whatever Claude had buffered.
             // Passing the token would race the kill: the reader could cancel before the pipes drain,
             // leaving us with empty stdout/stderr and no diagnostic data on timeout.
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            // Stdout is read line by line so each event's text reaches the sink as it is printed.
+            var stdoutBuffer = new StringBuilder();
+            var stdoutTask = ReadLinesAsync(proc.StandardOutput, stdoutBuffer, line => OnStdoutLine(line, sink, partialMessages));
             var stderrTask = proc.StandardError.ReadToEndAsync();
             try { await proc.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException)
@@ -437,7 +542,10 @@ public sealed class CliChatClient : IChatClient
                 // useless to debug without knowing what it printed. Use a short bounded wait
                 // because the pipes should already be closing as the kill propagates.
                 wallClock.Stop();
-                var partialStdout = await ProcessOutput.ReadPartialAsync(stdoutTask).ConfigureAwait(false);
+                // The buffer holds every line read so far, even if a grandchild keeps the pipe open.
+                await ProcessOutput.ReadPartialAsync(stdoutTask).ConfigureAwait(false);
+                string partialStdout;
+                lock (stdoutBuffer) partialStdout = stdoutBuffer.ToString();
                 var partialStderr = await ProcessOutput.ReadPartialAsync(stderrTask).ConfigureAwait(false);
                 _log.LogError(
                     "CLI {Binary} job {JobId} timed out after {TimeoutSec}s (wallMs={WallMs}). partialStdoutChars={StdoutChars} partialStderrChars={StderrChars} partialStderr={Stderr} partialStdout={Stdout}",
@@ -450,7 +558,7 @@ public sealed class CliChatClient : IChatClient
                 var trimmedOut = partialStdout.Trim();
                 if (trimmedOut.Length > 0) bits.Add($"stdout: {Truncate(trimmedOut, 600)}");
                 if (bits.Count == 0) bits.Add("(no stdout / stderr captured — claude.exe was idle or stuck before printing anything; check auth / network / MCP transport)");
-                return $"Error: '{_binary}' timed out after {_timeout.TotalSeconds:F0}s.\n{string.Join("\n", bits)}";
+                return Failed($"Error: '{_binary}' timed out after {_timeout.TotalSeconds:F0}s.\n{string.Join("\n", bits)}");
             }
 
             var stdout = await stdoutTask.ConfigureAwait(false);
@@ -458,6 +566,11 @@ public sealed class CliChatClient : IChatClient
 
             if (proc.ExitCode != 0)
             {
+                // An older Claude CLI rejects the flag before doing anything; the caller retries
+                // without it. Nothing has streamed, so the retry starts from a clean sink.
+                if (partialMessages && (stderr + stdout).Contains("include-partial-messages", StringComparison.OrdinalIgnoreCase))
+                    return new CliRunResult("", Succeeded: false, PartialMessagesUnsupported: true);
+
                 // Claude often writes diagnostics to stdout (even on failure, in --output-format json
                 // mode it sometimes prints a JSON error there). Log both streams so we don't lose
                 // whichever one carries the real signal.
@@ -473,7 +586,7 @@ public sealed class CliChatClient : IChatClient
                 var detail = trimmedErr.Length > 0
                     ? trimmedErr
                     : (trimmedOut.Length > 0 ? $"(no stderr; stdout was: {trimmedOut})" : "(no stderr or stdout)");
-                return $"Error: {_binary} exited with code {proc.ExitCode}.\n{detail}";
+                return Failed($"Error: {_binary} exited with code {proc.ExitCode}.\n{detail}");
             }
 
             if (!string.IsNullOrEmpty(stderr))
@@ -482,7 +595,7 @@ public sealed class CliChatClient : IChatClient
             wallClock.Stop();
             if (_kind == CliKind.Claude)
             {
-                var text = ParseClaudeJson(stdout, out var outcome);
+                var text = ParseClaudeStreamJson(stdout, sink, out var outcome);
                 _log.LogInformation(
                     "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} sessionId={SessionId} isError={IsError} apiStatus={ApiStatus} cliDurationMs={CliMs} cliApiMs={CliApiMs} costUsd={Cost} turns={Turns} inTok={InTok} outTok={OutTok} cacheReadTok={CacheReadTok} cacheCreateTok={CacheCreateTok}",
                     _binary, _jobId ?? "(none)",
@@ -501,15 +614,15 @@ public sealed class CliChatClient : IChatClient
                         "CLI {Binary} job {JobId} returned is_error=true (apiStatus={ApiStatus}, result={Snippet})",
                         _binary, _jobId ?? "(none)", outcome.ApiErrorStatus?.ToString() ?? "(none)", Truncate(text, 400));
                 }
-                return text;
+                return new CliRunResult(text, !outcome.IsError);
             }
             else if (_kind == CliKind.Codex)
             {
-                var text = ParseCodex(stdout);
+                var text = ParseCodexJsonl(stdout, out var isError);
                 _log.LogInformation(
-                    "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars}",
-                    _binary, _jobId ?? "(none)", wallClock.ElapsedMilliseconds, stdout.Length, text.Length);
-                return text;
+                    "CLI endpoint done: binary={Binary} job={JobId} exit=0 wallMs={WallMs} stdoutChars={StdoutChars} resultChars={ResultChars} isError={IsError}",
+                    _binary, _jobId ?? "(none)", wallClock.ElapsedMilliseconds, stdout.Length, text.Length, isError);
+                return new CliRunResult(text, !isError);
             }
             else // Copilot
             {
@@ -530,7 +643,7 @@ public sealed class CliChatClient : IChatClient
                         "CLI {Binary} job {JobId} returned a non-zero result (exit={Exit}, result={Snippet})",
                         _binary, _jobId ?? "(none)", outcome.ExitCode?.ToString() ?? "?", Truncate(text, 400));
                 }
-                return text;
+                return new CliRunResult(text, !outcome.IsError);
             }
         }
         finally
@@ -538,6 +651,136 @@ public sealed class CliChatClient : IChatClient
             try { Directory.Delete(tempDir, recursive: true); }
             catch { /* best-effort */ }
         }
+
+        static CliRunResult Failed(string message) => new(message, Succeeded: false);
+    }
+
+    /// <summary>
+    /// Drains a pipe line by line into <paramref name="buffer"/> (locked, so a timeout can read
+    /// what arrived so far), handing each line to <paramref name="onLine"/>. A parser that throws
+    /// must not lose the rest of the output, so its exceptions are swallowed.
+    /// </summary>
+    private async Task<string> ReadLinesAsync(StreamReader reader, StringBuilder buffer, Action<string> onLine)
+    {
+        while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+        {
+            lock (buffer) buffer.Append(line).Append('\n');
+            try { onLine(line); }
+            catch (Exception ex) { _log.LogDebug(ex, "CLI {Binary}: failed to read a streamed line", _binary); }
+        }
+        lock (buffer) return buffer.ToString();
+    }
+
+    private void OnStdoutLine(string line, DeltaSink sink, bool partialMessages)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0 || trimmed[0] != '{') return;
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(trimmed); }
+        catch (JsonException) { return; }
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return;
+            switch (_kind)
+            {
+                case CliKind.Claude: OnClaudeEvent(root, sink, partialMessages); break;
+                case CliKind.Codex: OnCodexEvent(root, sink); break;
+                default: OnCopilotEvent(root, sink); break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Claude <c>stream-json</c>: with partial messages, text arrives as
+    /// <c>stream_event</c> / <c>content_block_delta</c> / <c>text_delta</c>, and each
+    /// <c>content_block_start</c> begins a new block. Without them, each <c>assistant</c> event
+    /// carries a finished message. Events from subagents (Task tool) carry the parent tool
+    /// call's id and are not part of the reply.
+    /// </summary>
+    private static void OnClaudeEvent(JsonElement root, DeltaSink sink, bool partialMessages)
+    {
+        if (root.TryGetProperty("parent_tool_use_id", out var parent) && parent.ValueKind != JsonValueKind.Null) return;
+        var type = TryReadString(root, "type");
+
+        if (partialMessages)
+        {
+            if (type != "stream_event" || !root.TryGetProperty("event", out var ev) || ev.ValueKind != JsonValueKind.Object) return;
+            switch (TryReadString(ev, "type"))
+            {
+                case "content_block_start":
+                    sink.Break();
+                    break;
+                case "content_block_delta":
+                    if (ev.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.Object
+                        && TryReadString(delta, "type") == "text_delta")
+                        sink.Append(TryReadString(delta, "text"));
+                    break;
+            }
+            return;
+        }
+
+        if (type != "assistant" || !root.TryGetProperty("message", out var msg) || msg.ValueKind != JsonValueKind.Object
+            || !msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.ValueKind != JsonValueKind.Object || TryReadString(block, "type") != "text") continue;
+            sink.Break();
+            sink.Append(TryReadString(block, "text"));
+        }
+    }
+
+    /// <summary>Codex <c>exec --json</c>: each finished agent message is an <c>item.completed</c> event.</summary>
+    private static void OnCodexEvent(JsonElement root, DeltaSink sink)
+    {
+        if (TryReadString(root, "type") != "item.completed"
+            || !root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object
+            || TryReadString(item, "type") != "agent_message") return;
+        sink.Break();
+        sink.Append(TryReadString(item, "text"));
+    }
+
+    /// <summary>Copilot JSONL: <c>assistant.message_delta</c> carries each fragment; <c>assistant.message_start</c> begins a message.</summary>
+    private static void OnCopilotEvent(JsonElement root, DeltaSink sink)
+    {
+        switch (TryReadString(root, "type"))
+        {
+            case "assistant.message_start":
+                sink.Break();
+                break;
+            case "assistant.message_delta":
+                if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+                    sink.Append(TryReadString(data, "deltaContent"));
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Finds the terminal <c>result</c> event in <c>stream-json</c> output — the envelope
+    /// <c>--output-format json</c> prints — and parses it as before. With no result event (the
+    /// run crashed mid-way), the streamed text is returned rather than raw NDJSON.
+    /// </summary>
+    private string ParseClaudeStreamJson(string stdout, DeltaSink sink, out ClaudeOutcome outcome)
+    {
+        var lines = stdout.Split('\n');
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i].Trim();
+            if (line.Length == 0 || line[0] != '{') continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object && TryReadString(doc.RootElement, "type") == "result")
+                    return ParseClaudeJson(line, out outcome);
+            }
+            catch (JsonException) { /* diagnostics interleaved with events — keep scanning */ }
+        }
+
+        outcome = default;
+        if (sink.EmittedAny) return sink.Text;
+        outcome.IsError = true;
+        var trimmed = stdout.Trim();
+        return trimmed.Length == 0 ? "(claude returned no output)" : $"Error: claude returned no result.\n{Truncate(trimmed, 600)}";
     }
 
     private string ParseClaudeJson(string stdout, out ClaudeOutcome outcome)
@@ -605,6 +848,66 @@ public sealed class CliChatClient : IChatClient
         public long? OutputTokens;
         public long? CacheReadTokens;
         public long? CacheCreationTokens;
+    }
+
+    /// <summary>
+    /// Parses Codex <c>exec --json</c> output: <c>thread.started</c> carries the thread id that
+    /// <c>exec resume</c> takes, each <c>item.completed</c> of type <c>agent_message</c> carries a
+    /// finished message (the last one is the reply), and <c>turn.failed</c> / <c>error</c> report
+    /// failures. Output with no JSON events at all is treated as plain text.
+    /// </summary>
+    private string ParseCodexJsonl(string stdout, out bool isError)
+    {
+        isError = false;
+        string? lastMessage = null;
+        string? error = null;
+        var sawEvent = false;
+
+        foreach (var raw in stdout.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line[0] != '{') continue;
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(line); }
+            catch (JsonException) { continue; }
+            using (doc)
+            {
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) continue;
+                var type = TryReadString(root, "type");
+                if (type is null) continue;
+                sawEvent = true;
+                switch (type)
+                {
+                    case "thread.started":
+                        var threadId = TryReadString(root, "thread_id");
+                        if (_jobId is not null && !string.IsNullOrWhiteSpace(threadId))
+                            _sessions.Set(_jobId, _sessionKey, _cwd, threadId);
+                        break;
+                    case "item.completed":
+                        if (root.TryGetProperty("item", out var item) && item.ValueKind == JsonValueKind.Object
+                            && TryReadString(item, "type") == "agent_message")
+                            lastMessage = TryReadString(item, "text") ?? lastMessage;
+                        break;
+                    case "turn.failed":
+                        if (root.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object)
+                            error = TryReadString(err, "message") ?? error;
+                        break;
+                    case "error":
+                        error = TryReadString(root, "message") ?? error;
+                        break;
+                }
+            }
+        }
+
+        if (!sawEvent) return ParseCodex(stdout);
+        if (!string.IsNullOrEmpty(lastMessage)) return lastMessage;
+        if (error is not null)
+        {
+            isError = true;
+            return $"Error from codex: {error}";
+        }
+        return "(codex returned no output)";
     }
 
     private string ParseCodex(string stdout)
